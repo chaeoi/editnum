@@ -24,10 +24,11 @@
 
 - 版本号取当前提交日期，格式 `YYYYMMDD`，例如 `20260722`。
 - Windows 文件版本使用等价的 `YYYY.M.D.0`，产品版本显示 `YYYYMMDD`。
-- 产物为 `PDFDrawingNumberTool-YYYYMMDD-win64-portable.zip` 和 SHA-256 文件。
-- 解压后直接运行 `PDF图号替换工具.exe`，无需管理员权限或安装环境。
+- Release 标签为 `YYYYMMDD`，同一天重复构建会更新该 Release。
+- 下载文件为 `EditNum-YYYYMMDD-win64.zip` 和 SHA-256 文件。
+- 解压后直接运行 `EditNum.exe`，无需管理员权限或安装环境。
 
-在 GitHub 仓库的 **Actions** 页面打开对应构建，在 **Artifacts** 下载便携包。
+在 GitHub 仓库的 **Releases** 页面直接下载便携包。
 
 ## 本地开发
 
