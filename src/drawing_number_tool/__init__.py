@@ -1,4 +1,4 @@
-"""Drawing-number recognition and replacement tool."""
+"""PDF text recognition and batch replacement tool."""
 
 from .version import __version__
 

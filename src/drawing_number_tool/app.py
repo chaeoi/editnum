@@ -57,10 +57,20 @@ def _windows_font_choices() -> dict[str, str]:
     return dict(sorted(choices.items(), key=lambda item: item[0].casefold()))
 
 
-class DrawingNumberApp:
+def _drag_bounds(
+    start: tuple[float, float], end: tuple[float, float], minimum_size: float = 6.0
+) -> tuple[float, float, float, float] | None:
+    x0, x1 = sorted((start[0], end[0]))
+    y0, y1 = sorted((start[1], end[1]))
+    if x1 - x0 < minimum_size or y1 - y0 < minimum_size:
+        return None
+    return x0, y0, x1, y1
+
+
+class PdfTextReplaceApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title(f"PDF 图号替换 {__version__}")
+        self.root.title(f"PDF 批量文字替换 {__version__}")
         self.root.geometry("1440x900")
         self.root.minsize(1180, 720)
 
@@ -134,7 +144,7 @@ class DrawingNumberApp:
         panel = ttk.Frame(main, style="Panel.TFrame", width=520)
         main.add(panel, minsize=520, width=520, stretch="never")
 
-        settings = ttk.LabelFrame(panel, text="替换设置", padding=8)
+        settings = ttk.LabelFrame(panel, text="新文字生成规则", padding=8)
         settings.pack(fill=tk.X)
         ttk.Label(settings, text="固定前段（可空）").grid(row=0, column=0, sticky=tk.W)
         ttk.Label(settings, text="递增起始（可空）").grid(
@@ -169,21 +179,12 @@ class DrawingNumberApp:
             row=2, column=0, columnspan=4, sticky=tk.EW, pady=(0, 9)
         )
 
-        ttk.Label(settings, text="区域 DPI").grid(row=3, column=0, sticky=tk.W)
+        ttk.Label(settings, text="选区 DPI").grid(row=3, column=0, sticky=tk.W)
         self.fixed_dpi_var = tk.IntVar(value=300)
         ttk.Spinbox(settings, from_=144, to=600, textvariable=self.fixed_dpi_var, width=8).grid(
             row=4, column=0, sticky=tk.W, pady=(2, 7)
         )
-        ttk.Label(settings, text="全页 DPI").grid(row=3, column=1, sticky=tk.W, padx=(8, 0))
-        self.global_dpi_var = tk.IntVar(value=180)
-        ttk.Spinbox(settings, from_=96, to=300, textvariable=self.global_dpi_var, width=8).grid(
-            row=4, column=1, sticky=tk.W, padx=(8, 0), pady=(2, 7)
-        )
-        self.global_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(settings, text="全页补充搜索替换", variable=self.global_var).grid(
-            row=4, column=2, columnspan=2, sticky=tk.W, padx=(8, 0), pady=(2, 7)
-        )
-        ttk.Label(settings, text="替换字体").grid(row=5, column=0, sticky=tk.W)
+        ttk.Label(settings, text="写入字体").grid(row=3, column=1, sticky=tk.W, padx=(8, 0))
         self.font_paths = {AUTO_FONT: "", **_windows_font_choices()}
         self.font_var = tk.StringVar(value=AUTO_FONT)
         self.font_combo = ttk.Combobox(
@@ -192,26 +193,53 @@ class DrawingNumberApp:
             values=tuple(self.font_paths),
             state="readonly",
         )
-        self.font_combo.grid(row=6, column=0, columnspan=4, sticky=tk.EW, pady=(2, 2))
+        self.font_combo.grid(
+            row=4, column=1, columnspan=3, sticky=tk.EW, padx=(8, 0), pady=(2, 7)
+        )
         settings.columnconfigure(0, weight=3)
         settings.columnconfigure(1, weight=1)
         settings.columnconfigure(2, weight=1)
         settings.columnconfigure(3, weight=2)
 
+        execution_options = ttk.LabelFrame(panel, text="执行选项", padding=(8, 6))
+        execution_options.pack(fill=tk.X, pady=(10, 0))
+        self.global_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            execution_options,
+            text="同时替换全文中的相同文字",
+            variable=self.global_var,
+            command=self._global_option_changed,
+        ).grid(row=0, column=0, columnspan=2, sticky=tk.W)
+        ttk.Label(execution_options, text="全文识别 DPI").grid(
+            row=1, column=0, sticky=tk.W, pady=(6, 0)
+        )
+        self.global_dpi_var = tk.IntVar(value=180)
+        self.global_dpi_spinbox = ttk.Spinbox(
+            execution_options,
+            from_=96,
+            to=300,
+            textvariable=self.global_dpi_var,
+            width=8,
+            state=tk.DISABLED,
+        )
+        self.global_dpi_spinbox.grid(row=1, column=1, sticky=tk.W, padx=(8, 0), pady=(6, 0))
+
         action_row = ttk.Frame(panel)
-        action_row.pack(fill=tk.X, pady=(10, 8))
-        self.recognize_button = ttk.Button(action_row, text="识别各页图号", command=self._recognize)
+        action_row.pack(fill=tk.X, pady=(8, 8))
+        self.recognize_button = ttk.Button(
+            action_row, text="识别各页选区", command=self._recognize
+        )
         self.recognize_button.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self.process_button = ttk.Button(action_row, text="执行替换", command=self._process)
+        self.process_button = ttk.Button(action_row, text="生成替换文件", command=self._process)
         self.process_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
 
-        result_frame = ttk.LabelFrame(panel, text="识别与映射", padding=6)
+        result_frame = ttk.LabelFrame(panel, text="识别与替换预览", padding=6)
         result_frame.pack(fill=tk.BOTH, expand=True)
         columns = ("page", "source", "target")
         self.tree = ttk.Treeview(result_frame, columns=columns, show="headings", selectmode="browse")
-        self.tree.heading("page", text="页")
-        self.tree.heading("source", text="原图号")
-        self.tree.heading("target", text="新图号")
+        self.tree.heading("page", text="页码")
+        self.tree.heading("source", text="识别文字")
+        self.tree.heading("target", text="替换文字")
         self.tree.column("page", width=48, anchor=tk.CENTER, stretch=False)
         self.tree.column("source", width=165, anchor=tk.W)
         self.tree.column("target", width=250, anchor=tk.W)
@@ -271,12 +299,16 @@ class DrawingNumberApp:
             self.rule_preview_var.set("预览：规则尚未填写完整")
             return
         if not first and not second:
-            preview = "（空，将清除图号）"
+            preview = "（空，将清除选中文字）"
         else:
             preview = first if first == second else f"{first}  →  {second}"
         self.rule_preview_var.set(f"预览：{preview}")
         if hasattr(self, "tree") and self.recognitions:
             self._refresh_table()
+
+    def _global_option_changed(self) -> None:
+        state = tk.NORMAL if self.global_var.get() else tk.DISABLED
+        self.global_dpi_spinbox.configure(state=state)
 
     def _open_pdf(self) -> None:
         filename = filedialog.askopenfilename(filetypes=[("PDF 文件", "*.pdf"), ("所有文件", "*.*")])
@@ -309,6 +341,7 @@ class DrawingNumberApp:
         self.preview_size = image.size
         self.preview_photo = ImageTk.PhotoImage(image)
         self.canvas.delete("all")
+        self.selection_item = None
         self.canvas.create_image(0, 0, image=self.preview_photo, anchor=tk.NW)
         self.canvas.configure(scrollregion=(0, 0, image.width, image.height))
         self.page_label.configure(text=f"{self.page_index + 1} / {len(self.document)}")
@@ -379,22 +412,21 @@ class DrawingNumberApp:
         x, y = self._canvas_point(event)
         start_x, start_y = self.drag_start
         width, height = self.preview_size
-        if abs(x - start_x) < 6 and abs(y - start_y) < 6:
-            half_width = width * 0.09
-            half_height = height * 0.015
-            x0, x1 = max(0, x - half_width), min(width, x + half_width)
-            y0, y1 = max(0, y - half_height), min(height, y + half_height)
-        else:
-            x0, x1 = sorted((start_x, x))
-            y0, y1 = sorted((start_y, y))
         self.drag_start = None
-        if x1 - x0 < 2 or y1 - y0 < 2:
+        bounds = _drag_bounds((start_x, start_y), (x, y))
+        if bounds is None:
+            if self.selection_item is not None:
+                self.canvas.delete(self.selection_item)
+                self.selection_item = None
+            self._draw_selection()
+            self.status_var.set("请按住鼠标拖出文字选区")
             return
+        x0, y0, x1, y1 = bounds
         self.selection = NormalizedRect(x0 / width, y0 / height, x1 / width, y1 / height)
         self.recognitions.clear()
         self._refresh_table()
         self._render_preview()
-        self.status_var.set("图号区域已选择")
+        self.status_var.set("文字选区已设置")
 
     def _mousewheel(self, event) -> None:
         if event.state & 0x0004:
@@ -404,7 +436,9 @@ class DrawingNumberApp:
 
     def _recognize(self) -> None:
         if self.source_path is None or self.selection is None:
-            messagebox.showwarning("缺少选择", "请打开 PDF 并在图号位置单击或拖框。", parent=self.root)
+            messagebox.showwarning(
+                "缺少选区", "请打开 PDF，并按住鼠标拖出要识别的文字区域。", parent=self.root
+            )
             return
         try:
             options = self._options()
@@ -456,7 +490,7 @@ class DrawingNumberApp:
         item = self.recognitions[page_number - 1]
         value = simpledialog.askstring(
             "修正识别值",
-            f"第 {page_number} 页原图号",
+            f"第 {page_number} 页识别文字",
             initialvalue=item.source,
             parent=self.root,
         )
@@ -467,14 +501,14 @@ class DrawingNumberApp:
 
     def _process(self) -> None:
         if self.source_path is None or self.selection is None or not self.recognitions:
-            messagebox.showwarning("尚未识别", "请先选择图号位置并完成识别。", parent=self.root)
+            messagebox.showwarning("尚未识别", "请先拖出文字选区并完成识别。", parent=self.root)
             return
         try:
             options = self._options()
         except Exception as exc:
             messagebox.showerror("设置错误", str(exc), parent=self.root)
             return
-        default_name = self.source_path.stem + "_图号已修改.pdf"
+        default_name = self.source_path.stem + "_文字已替换.pdf"
         filename = filedialog.asksaveasfilename(
             defaultextension=".pdf",
             initialdir=str(self.source_path.parent),
@@ -506,8 +540,8 @@ class DrawingNumberApp:
         self.status_var.set("替换完成")
         messagebox.showinfo(
             "处理完成",
-            f"固定位置：{report.fixed_replacements}\n"
-            f"全局补充：{report.global_replacements}\n"
+            f"选区位置：{report.fixed_replacements}\n"
+            f"全文替换：{report.global_replacements}\n"
             f"{font_text}\n\n"
             f"PDF：{report.output_path}\n日志：{report.log_path}",
             parent=self.root,
@@ -582,5 +616,5 @@ def run() -> None:
     except (AttributeError, OSError):
         pass
     root = tk.Tk()
-    DrawingNumberApp(root)
+    PdfTextReplaceApp(root)
     root.mainloop()

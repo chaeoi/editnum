@@ -43,3 +43,7 @@ def test_all_numbering_parts_are_individually_optional() -> None:
 def test_all_numbering_parts_can_be_empty_to_clear_the_old_number() -> None:
     options = ProcessOptions(fixed_prefix="", fixed_suffix="", start_sequence=None)
     assert options.number_for(1) == ""
+
+
+def test_document_wide_replacement_is_opt_in() -> None:
+    assert not ProcessOptions().global_search

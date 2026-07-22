@@ -20,9 +20,9 @@ def _selection(value: str) -> NormalizedRect:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="离线识别并替换 PDF 图号")
+    parser = argparse.ArgumentParser(description="离线识别并批量替换 PDF 文字")
     parser.add_argument("source", type=Path, help="源 PDF")
-    parser.add_argument("--rect", required=True, type=_selection, help="归一化图号区域")
+    parser.add_argument("--rect", required=True, type=_selection, help="归一化文字选区")
     parser.add_argument("-o", "--output", type=Path, help="输出 PDF")
     parser.add_argument("--prefix", default="00QK0188RJB-LJ-", help="固定前缀，可为空")
     parser.add_argument("--start", type=int, default=1, help="起始序号")
@@ -31,11 +31,13 @@ def main() -> None:
     parser.add_argument("--suffix", default="-0-260715", help="固定后缀，可为空")
     parser.add_argument("--font-file", type=Path, help="替换时使用的 TTF/TTC/OTF 字体文件")
     parser.add_argument("--fixed-dpi", type=int, default=300)
-    parser.add_argument("--global-dpi", type=int, default=180)
-    parser.add_argument("--no-global-search", action="store_true")
+    parser.add_argument("--document-dpi", "--global-dpi", dest="global_dpi", type=int, default=180)
+    parser.add_argument(
+        "--replace-all", action="store_true", help="同时替换全文中的相同文字"
+    )
     args = parser.parse_args()
 
-    output = args.output or args.source.with_name(args.source.stem + "_图号已修改.pdf")
+    output = args.output or args.source.with_name(args.source.stem + "_文字已替换.pdf")
     options = ProcessOptions(
         fixed_prefix=args.prefix,
         fixed_suffix=args.suffix,
@@ -43,7 +45,7 @@ def main() -> None:
         sequence_digits=args.digits,
         fixed_dpi=args.fixed_dpi,
         global_dpi=args.global_dpi,
-        global_search=not args.no_global_search,
+        global_search=args.replace_all,
         replacement_font_path=str(args.font_file or ""),
         replacement_font_name=args.font_file.stem if args.font_file else "",
     )

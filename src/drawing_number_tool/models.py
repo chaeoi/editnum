@@ -54,7 +54,7 @@ class ProcessOptions:
     sequence_digits: int = 3
     fixed_dpi: int = 300
     global_dpi: int = 180
-    global_search: bool = True
+    global_search: bool = False
     replacement_font_path: str = ""
     replacement_font_name: str = ""
 
@@ -66,7 +66,8 @@ class ProcessOptions:
         if not 144 <= self.fixed_dpi <= 600:
             raise ValueError("区域 DPI 必须在 144 到 600 之间")
         if not 96 <= self.global_dpi <= 300:
-            raise ValueError("全页 DPI 必须在 96 到 300 之间")
+            raise ValueError("全文 OCR DPI 必须在 96 到 300 之间")
+
     def number_for(self, sequence: int) -> str:
         self.validate()
         increment = ""
@@ -120,7 +121,7 @@ def build_mapping(
     for recognition in sorted(recognitions, key=lambda item: item.page_number):
         source = clean_ocr_text(recognition.source)
         if not source:
-            raise ValueError(f"Page {recognition.page_number} has an empty drawing number")
+            raise ValueError(f"第 {recognition.page_number} 页的识别文字为空")
         key = matching_key(source)
         if key not in grouped:
             grouped[key] = {"source": source, "pages": []}

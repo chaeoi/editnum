@@ -85,7 +85,7 @@ def recognize_fixed_regions(
                         raw_text=text,
                 )
             )
-        progress(total, total, "固定区域识别完成")
+        progress(total, total, "各页选区识别完成")
         return recognitions
     finally:
         document.close()
@@ -275,12 +275,12 @@ def _replace_visually(
                     target=mapping_by_key[source_key],
                     clear_rect=_to_unrotated(page, fixed_clear_display),
                     placement_rect=_to_unrotated(page, fixed_place_display),
-                    kind="固定区域",
+                    kind="选区位置",
                     display_height=fixed_clear_display.height,
                 )
             ]
             if options.global_search:
-                progress(index, total_steps, f"正在全页搜索第 {index + 1}/{len(document)} 页")
+                progress(index, total_steps, f"正在搜索全文第 {index + 1}/{len(document)} 页")
                 global_hits = _find_global_hits(
                     page,
                     mapping_by_key,
@@ -290,7 +290,7 @@ def _replace_visually(
                 )
                 hits.extend(global_hits)
             deduplicated = _deduplicate_hits(hits)
-            global_count += sum(hit.kind != "固定区域" for hit in deduplicated)
+            global_count += sum(hit.kind != "选区位置" for hit in deduplicated)
             hits_by_page.append(deduplicated)
 
         for index, (page, hits) in enumerate(zip(document, hits_by_page)):
@@ -368,7 +368,7 @@ def _find_global_hits(
                     target=target,
                     clear_rect=pymupdf.Rect(source_rect),
                     placement_rect=pymupdf.Rect(source_rect),
-                    kind="文本层全局命中",
+                    kind="文本层全文命中",
                     display_height=display_rect.height,
                 )
             )
@@ -465,9 +465,9 @@ def _rect_overlap_ratio(a: pymupdf.Rect, b: pymupdf.Rect) -> float:
 def _deduplicate_hits(hits: list[_Hit]) -> list[_Hit]:
     result: list[_Hit] = []
     priority = {
-        "固定区域": 4,
+        "选区位置": 4,
         "文本层整行重排": 3,
-        "文本层全局命中": 2,
+        "文本层全文命中": 2,
         "OCR 整行重排": 1,
         "精确替换后 OCR 整行重排": 1,
     }
@@ -506,7 +506,7 @@ def _replace_remaining_ocr_hits(
     try:
         for index, page in enumerate(document):
             _check_cancel(cancel_event)
-            progress(index, total, f"正在检查全页残留 {index + 1}/{total} 页")
+            progress(index, total, f"正在检查全文残留 {index + 1}/{total} 页")
             image = render_page(page, options.global_dpi)
             page_hits: list[_Hit] = []
             for match in find_mapping_matches(ocr.recognize(image), set(mapping_by_key)):
@@ -533,8 +533,8 @@ def _replace_remaining_ocr_hits(
 
         count = sum(map(len, hits_by_page))
         if count == 0:
-            log_lines.append("精确替换后全页 OCR 残留：0")
-            progress(total, total, "全页残留检查完成")
+            log_lines.append("精确替换后全文 OCR 残留：0")
+            progress(total, total, "全文残留检查完成")
             return 0, True
 
         all_exact = True
@@ -570,8 +570,8 @@ def _replace_remaining_ocr_hits(
         document.save(temp_path, garbage=4, deflate=True)
         document.close()
         os.replace(temp_path, output_path)
-        log_lines.append(f"精确替换后全页 OCR 残留：{count}")
-        progress(total, total, "全页残留检查完成")
+        log_lines.append(f"精确替换后全文 OCR 残留：{count}")
+        progress(total, total, "全文残留检查完成")
         return count, all_exact
     finally:
         if not document.is_closed:
@@ -800,7 +800,7 @@ def _write_log(
     detail_lines: list[str],
 ) -> None:
     lines = [
-        "PDF 图号识别替换日志",
+        "PDF 批量文字替换日志",
         f"软件版本：{__version__}",
         f"处理时间：{datetime.now().astimezone().isoformat(timespec='seconds')}",
         f"源文件：{source_path}",
@@ -815,11 +815,11 @@ def _write_log(
         ),
         f"固定后缀：{options.fixed_suffix or '（空）'}",
         f"替换字体：{options.replacement_font_name or '自动匹配原字体'}",
-        f"固定区域 OCR DPI：{options.fixed_dpi}",
-        f"全页搜索：{'是' if options.global_search else '否'}",
-        f"全页 OCR DPI：{options.global_dpi}",
+        f"选区 OCR DPI：{options.fixed_dpi}",
+        f"全文相同文字替换：{'是' if options.global_search else '否'}",
+        f"全文 OCR DPI：{options.global_dpi}",
         "",
-        "[固定位置识别]",
+        "[各页选区识别]",
     ]
     lines.extend(f"第 {item.page_number} 页 | {item.source}" for item in recognitions)
     lines.extend(["", "[替换对应关系]"])
@@ -831,8 +831,8 @@ def _write_log(
         [
             "",
             "[执行结果]",
-            f"固定位置替换：{report.fixed_replacements}",
-            f"全局补充替换：{report.global_replacements}",
+            f"选区位置替换：{report.fixed_replacements}",
+            f"全文相同文字替换：{report.global_replacements}",
             f"精确保留嵌入字体：{'是' if report.exact_font_preserved else '否'}",
         ]
     )

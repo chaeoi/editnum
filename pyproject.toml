@@ -3,17 +3,17 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pdf-drawing-number-tool"
+name = "pdf-batch-text-replacer"
 dynamic = ["version"]
-description = "Offline PDF drawing-number recognition and replacement tool"
+description = "Offline PDF text recognition and batch replacement tool"
 readme = "README.md"
 requires-python = ">=3.10"
 
 [project.scripts]
-pdf-drawing-number = "drawing_number_tool.cli:main"
+pdf-text-replace = "drawing_number_tool.cli:main"
 
 [project.gui-scripts]
-pdf-drawing-number-gui = "drawing_number_tool.app:run"
+pdf-text-replace-gui = "drawing_number_tool.app:run"
 
 [tool.setuptools.dynamic]
 version = {attr = "drawing_number_tool.version.__version__"}

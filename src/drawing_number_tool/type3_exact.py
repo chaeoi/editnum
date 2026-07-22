@@ -185,7 +185,7 @@ def _add_replacement_glyphs(font, glyphs: dict[str, object]) -> None:
     differences = font.Encoding.Differences
     differences.append(min(NEW_GLYPH_CODES.values()))
     for char, code in sorted(NEW_GLYPH_CODES.items(), key=lambda item: item[1]):
-        name = pikepdf.Name(f"/DrawingNumber{code}")
+        name = pikepdf.Name(f"/ReplacementGlyph{code}")
         differences.append(name)
         font.CharProcs[name] = glyphs[char]
 
@@ -203,7 +203,7 @@ def replace_exact_type3(
     output_path: Path,
     recognitions: list[PageRecognition],
     mapping_by_key: dict[str, str],
-    global_search: bool = True,
+    global_search: bool = False,
 ) -> ExactResult:
     pdf = pikepdf.open(source_path)
     if len(pdf.pages) != len(recognitions):
