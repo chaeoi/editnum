@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import pymupdf
@@ -92,42 +93,132 @@ class PdfTextReplaceApp:
         self.root.protocol("WM_DELETE_WINDOW", self._close)
 
     def _build_ui(self) -> None:
-        style = ttk.Style()
-        style.configure("Toolbar.TFrame", padding=(8, 6))
-        style.configure("Panel.TFrame", padding=10)
-        style.configure("Treeview", rowheight=26)
+        style = ttk.Style(self.root)
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
+
+        background = "#edf1f4"
+        surface = "#ffffff"
+        text = "#202a33"
+        muted = "#687681"
+        border = "#cbd3da"
+        accent = "#147d73"
+        accent_active = "#0f665e"
+        if os.name == "nt":
+            installed = set(tkfont.families(self.root))
+            if "Microsoft YaHei UI" in installed:
+                for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
+                    tkfont.nametofont(name).configure(family="Microsoft YaHei UI", size=10)
+        tkfont.nametofont("TkHeadingFont").configure(weight="bold")
+
+        self.root.configure(background=background)
+        self.root.option_add("*tearOff", False)
+        style.configure("TFrame", background=background)
+        style.configure("TLabel", background=background, foreground=text)
+        style.configure("Toolbar.TFrame", background=surface, padding=(12, 9))
+        style.configure("Toolbar.TLabel", background=surface, foreground=muted)
+        style.configure("Panel.TFrame", background=background, padding=(12, 12, 14, 10))
+        style.configure(
+            "Panel.TLabelframe",
+            background=surface,
+            bordercolor=border,
+            darkcolor=border,
+            lightcolor=border,
+            relief=tk.SOLID,
+        )
+        style.configure(
+            "Panel.TLabelframe.Label",
+            background=surface,
+            foreground=text,
+            font="TkHeadingFont",
+        )
+        style.configure("Panel.TLabel", background=surface, foreground=text)
+        style.configure("Muted.Panel.TLabel", background=surface, foreground=muted)
+        style.configure(
+            "Preview.Panel.TLabel",
+            background="#eaf5f3",
+            foreground="#155f58",
+            padding=(8, 6),
+        )
+        style.configure("Panel.TFrame.Inner", background=surface)
+        style.configure("Panel.TCheckbutton", background=surface, foreground=text)
+        style.map(
+            "Panel.TCheckbutton",
+            background=[("active", surface)],
+            indicatorcolor=[("selected", accent), ("!selected", surface)],
+        )
+        style.configure("TButton", padding=(10, 7), borderwidth=1)
+        style.configure(
+            "Primary.TButton",
+            background=accent,
+            foreground="#ffffff",
+            bordercolor=accent,
+            focuscolor=accent,
+            padding=(12, 8),
+        )
+        style.map(
+            "Primary.TButton",
+            background=[("active", accent_active), ("pressed", accent_active), ("disabled", "#9cbab6")],
+            foreground=[("disabled", "#eef4f3")],
+        )
+        style.configure(
+            "Treeview",
+            background=surface,
+            fieldbackground=surface,
+            foreground=text,
+            borderwidth=0,
+            rowheight=29,
+        )
+        style.map("Treeview", background=[("selected", "#d9ece9")], foreground=[("selected", text)])
+        style.configure(
+            "Treeview.Heading",
+            background="#f2f5f7",
+            foreground="#42505b",
+            relief=tk.FLAT,
+            padding=(7, 7),
+        )
+        style.map("Treeview.Heading", background=[("active", "#e6ebef")])
+        style.configure("Status.TFrame", background=surface, padding=(12, 7))
+        style.configure("Status.TLabel", background=surface, foreground=muted)
+        style.configure("Horizontal.TProgressbar", troughcolor="#dfe6e9", background=accent)
 
         toolbar = ttk.Frame(self.root, style="Toolbar.TFrame")
         toolbar.pack(fill=tk.X)
-        self.open_button = ttk.Button(toolbar, text="打开 PDF", command=self._open_pdf)
+        self.open_button = ttk.Button(toolbar, text="打开文件", command=self._open_pdf)
         self.open_button.pack(side=tk.LEFT)
-        ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
+        ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10)
         self.prev_button = ttk.Button(toolbar, text="上一页", command=lambda: self._change_page(-1))
         self.prev_button.pack(side=tk.LEFT)
         self.next_button = ttk.Button(toolbar, text="下一页", command=lambda: self._change_page(1))
         self.next_button.pack(side=tk.LEFT, padx=(4, 0))
-        self.page_label = ttk.Label(toolbar, text="0 / 0", width=10, anchor=tk.CENTER)
+        self.page_label = ttk.Label(
+            toolbar, text="0 / 0", width=9, anchor=tk.CENTER, style="Toolbar.TLabel"
+        )
         self.page_label.pack(side=tk.LEFT, padx=6)
         ttk.Button(toolbar, text="缩小", command=lambda: self._change_zoom(0.8)).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="放大", command=lambda: self._change_zoom(1.25)).pack(side=tk.LEFT, padx=(4, 0))
-        self.zoom_label = ttk.Label(toolbar, text="100%", width=7, anchor=tk.CENTER)
+        self.zoom_label = ttk.Label(
+            toolbar, text="100%", width=7, anchor=tk.CENTER, style="Toolbar.TLabel"
+        )
         self.zoom_label.pack(side=tk.LEFT, padx=4)
-        self.file_label = ttk.Label(toolbar, text="未打开文件", anchor=tk.W)
+        self.file_label = ttk.Label(
+            toolbar, text="未打开文件", anchor=tk.W, style="Toolbar.TLabel"
+        )
         self.file_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(12, 0))
 
         main = tk.PanedWindow(
             self.root,
             orient=tk.HORIZONTAL,
             borderwidth=0,
-            sashwidth=5,
+            sashwidth=6,
             sashrelief=tk.FLAT,
-            background=style.lookup("TFrame", "background"),
+            background="#cbd3da",
         )
         main.pack(fill=tk.BOTH, expand=True)
 
         viewer = ttk.Frame(main)
         main.add(viewer, minsize=540, stretch="always")
-        self.canvas = tk.Canvas(viewer, bg="#5a5a5a", highlightthickness=0, cursor="crosshair")
+        self.canvas = tk.Canvas(viewer, bg="#3f464c", highlightthickness=0, cursor="crosshair")
         x_scroll = ttk.Scrollbar(viewer, orient=tk.HORIZONTAL, command=self.canvas.xview)
         y_scroll = ttk.Scrollbar(viewer, orient=tk.VERTICAL, command=self.canvas.yview)
         self.canvas.configure(xscrollcommand=x_scroll.set, yscrollcommand=y_scroll.set)
@@ -141,26 +232,32 @@ class PdfTextReplaceApp:
         self.canvas.bind("<ButtonRelease-1>", self._selection_end)
         self.canvas.bind("<MouseWheel>", self._mousewheel)
 
-        panel = ttk.Frame(main, style="Panel.TFrame", width=520)
-        main.add(panel, minsize=520, width=520, stretch="never")
+        panel = ttk.Frame(main, style="Panel.TFrame", width=540)
+        main.add(panel, minsize=520, width=540, stretch="never")
 
-        settings = ttk.LabelFrame(panel, text="新文字生成规则", padding=8)
+        settings = ttk.LabelFrame(
+            panel, text="替换文字生成规则", padding=(12, 10), style="Panel.TLabelframe"
+        )
         settings.pack(fill=tk.X)
-        ttk.Label(settings, text="固定前段（可空）").grid(row=0, column=0, sticky=tk.W)
-        ttk.Label(settings, text="递增起始（可空）").grid(
+        ttk.Label(settings, text="固定前段（可空）", style="Panel.TLabel").grid(
+            row=0, column=0, sticky=tk.W
+        )
+        ttk.Label(settings, text="递增起始（可空）", style="Panel.TLabel").grid(
             row=0, column=1, sticky=tk.W, padx=(8, 0)
         )
-        ttk.Label(settings, text="位数").grid(row=0, column=2, sticky=tk.W, padx=(8, 0))
-        ttk.Label(settings, text="固定后段（可空）").grid(
+        ttk.Label(settings, text="位数", style="Panel.TLabel").grid(
+            row=0, column=2, sticky=tk.W, padx=(8, 0)
+        )
+        ttk.Label(settings, text="固定后段（可空）", style="Panel.TLabel").grid(
             row=0, column=3, sticky=tk.W, padx=(8, 0)
         )
         self.prefix_var = tk.StringVar(value="00QK0188RJB-LJ-")
         ttk.Entry(settings, textvariable=self.prefix_var, width=20).grid(
-            row=1, column=0, sticky=tk.EW, pady=(2, 6)
+            row=1, column=0, sticky=tk.EW, pady=(4, 8)
         )
         self.start_var = tk.StringVar(value="1")
         ttk.Spinbox(settings, from_=0, to=999999, textvariable=self.start_var, width=8).grid(
-            row=1, column=1, sticky=tk.EW, padx=(8, 0), pady=(2, 6)
+            row=1, column=1, sticky=tk.EW, padx=(8, 0), pady=(4, 8)
         )
         self.sequence_digits_var = tk.IntVar(value=3)
         ttk.Combobox(
@@ -169,22 +266,31 @@ class PdfTextReplaceApp:
             values=(1, 2, 3, 4, 5, 6),
             width=4,
             state="readonly",
-        ).grid(row=1, column=2, sticky=tk.EW, padx=(8, 0), pady=(2, 6))
+        ).grid(row=1, column=2, sticky=tk.EW, padx=(8, 0), pady=(4, 8))
         self.suffix_var = tk.StringVar(value="-0-260715")
         ttk.Entry(settings, textvariable=self.suffix_var, width=14).grid(
-            row=1, column=3, sticky=tk.EW, padx=(8, 0), pady=(2, 6)
+            row=1, column=3, sticky=tk.EW, padx=(8, 0), pady=(4, 8)
         )
         self.rule_preview_var = tk.StringVar()
-        ttk.Label(settings, textvariable=self.rule_preview_var, anchor=tk.W).grid(
-            row=2, column=0, columnspan=4, sticky=tk.EW, pady=(0, 9)
+        ttk.Label(
+            settings,
+            textvariable=self.rule_preview_var,
+            anchor=tk.W,
+            style="Preview.Panel.TLabel",
+        ).grid(
+            row=2, column=0, columnspan=4, sticky=tk.EW, pady=(0, 12)
         )
 
-        ttk.Label(settings, text="选区 DPI").grid(row=3, column=0, sticky=tk.W)
+        ttk.Label(settings, text="选区识别 DPI", style="Panel.TLabel").grid(
+            row=3, column=0, sticky=tk.W
+        )
         self.fixed_dpi_var = tk.IntVar(value=300)
         ttk.Spinbox(settings, from_=144, to=600, textvariable=self.fixed_dpi_var, width=8).grid(
-            row=4, column=0, sticky=tk.W, pady=(2, 7)
+            row=4, column=0, sticky=tk.EW, pady=(4, 2)
         )
-        ttk.Label(settings, text="写入字体").grid(row=3, column=1, sticky=tk.W, padx=(8, 0))
+        ttk.Label(settings, text="替换字体", style="Panel.TLabel").grid(
+            row=3, column=1, columnspan=3, sticky=tk.W, padx=(8, 0)
+        )
         self.font_paths = {AUTO_FONT: "", **_windows_font_choices()}
         self.font_var = tk.StringVar(value=AUTO_FONT)
         self.font_combo = ttk.Combobox(
@@ -194,14 +300,16 @@ class PdfTextReplaceApp:
             state="readonly",
         )
         self.font_combo.grid(
-            row=4, column=1, columnspan=3, sticky=tk.EW, padx=(8, 0), pady=(2, 7)
+            row=4, column=1, columnspan=3, sticky=tk.EW, padx=(8, 0), pady=(4, 2)
         )
         settings.columnconfigure(0, weight=3)
         settings.columnconfigure(1, weight=1)
         settings.columnconfigure(2, weight=1)
         settings.columnconfigure(3, weight=2)
 
-        execution_options = ttk.LabelFrame(panel, text="执行选项", padding=(8, 6))
+        execution_options = ttk.LabelFrame(
+            panel, text="执行范围", padding=(12, 9), style="Panel.TLabelframe"
+        )
         execution_options.pack(fill=tk.X, pady=(10, 0))
         self.global_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -209,9 +317,10 @@ class PdfTextReplaceApp:
             text="同时替换全文中的相同文字",
             variable=self.global_var,
             command=self._global_option_changed,
-        ).grid(row=0, column=0, columnspan=2, sticky=tk.W)
-        ttk.Label(execution_options, text="全文识别 DPI").grid(
-            row=1, column=0, sticky=tk.W, pady=(6, 0)
+            style="Panel.TCheckbutton",
+        ).grid(row=0, column=0, sticky=tk.W)
+        ttk.Label(execution_options, text="全文识别 DPI", style="Muted.Panel.TLabel").grid(
+            row=0, column=1, sticky=tk.E, padx=(12, 6)
         )
         self.global_dpi_var = tk.IntVar(value=180)
         self.global_dpi_spinbox = ttk.Spinbox(
@@ -222,18 +331,26 @@ class PdfTextReplaceApp:
             width=8,
             state=tk.DISABLED,
         )
-        self.global_dpi_spinbox.grid(row=1, column=1, sticky=tk.W, padx=(8, 0), pady=(6, 0))
+        self.global_dpi_spinbox.grid(row=0, column=2, sticky=tk.E)
+        execution_options.columnconfigure(0, weight=1)
 
         action_row = ttk.Frame(panel)
         action_row.pack(fill=tk.X, pady=(8, 8))
         self.recognize_button = ttk.Button(
-            action_row, text="识别各页选区", command=self._recognize
+            action_row, text="识别选区文字", command=self._recognize
         )
         self.recognize_button.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self.process_button = ttk.Button(action_row, text="生成替换文件", command=self._process)
+        self.process_button = ttk.Button(
+            action_row,
+            text="生成替换文件",
+            command=self._process,
+            style="Primary.TButton",
+        )
         self.process_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
 
-        result_frame = ttk.LabelFrame(panel, text="识别与替换预览", padding=6)
+        result_frame = ttk.LabelFrame(
+            panel, text="逐页识别与替换预览", padding=1, style="Panel.TLabelframe"
+        )
         result_frame.pack(fill=tk.BOTH, expand=True)
         columns = ("page", "source", "target")
         self.tree = ttk.Treeview(result_frame, columns=columns, show="headings", selectmode="browse")
@@ -262,10 +379,15 @@ class PdfTextReplaceApp:
             variable.trace_add("write", self._numbering_rule_changed)
         self._numbering_rule_changed()
 
-        status = ttk.Frame(self.root, padding=(8, 4))
-        status.pack(fill=tk.X)
+        status = ttk.Frame(self.root, style="Status.TFrame")
+        status.pack(fill=tk.X, side=tk.BOTTOM, before=main)
+        ttk.Separator(self.root, orient=tk.HORIZONTAL).pack(
+            fill=tk.X, side=tk.BOTTOM, before=main
+        )
         self.status_var = tk.StringVar(value="就绪")
-        ttk.Label(status, textvariable=self.status_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Label(status, textvariable=self.status_var, style="Status.TLabel").pack(
+            side=tk.LEFT, fill=tk.X, expand=True
+        )
         self.progress = ttk.Progressbar(status, mode="determinate", length=260)
         self.progress.pack(side=tk.LEFT, padx=(8, 6))
         self.cancel_button = ttk.Button(status, text="取消", command=self._cancel, state=tk.DISABLED)
@@ -360,7 +482,7 @@ class PdfTextReplaceApp:
             self.selection.y1 * height,
         )
         self.selection_item = self.canvas.create_rectangle(
-            *coords, outline="#d82424", width=2, dash=(6, 3)
+            *coords, outline="#ee8a28", width=2
         )
 
     def _change_page(self, delta: int) -> None:
@@ -397,7 +519,7 @@ class PdfTextReplaceApp:
             self.canvas.delete(self.selection_item)
         x, y = self.drag_start
         self.selection_item = self.canvas.create_rectangle(
-            x, y, x, y, outline="#d82424", width=2, dash=(6, 3)
+            x, y, x, y, outline="#ee8a28", width=2
         )
 
     def _selection_drag(self, event) -> None:

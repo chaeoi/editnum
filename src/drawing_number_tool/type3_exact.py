@@ -4,6 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
+import re
 
 import pikepdf
 
@@ -72,6 +73,8 @@ class _Block:
     source: str
     target: str
     fixed: bool
+    match_start: int | None = None
+    match_end: int | None = None
 
 
 def _instruction(operator, *operands):
@@ -113,17 +116,63 @@ def _shown_codes(instructions) -> list[int]:
     return result
 
 
+def _shown_code_refs(instructions) -> list[tuple[int, int]]:
+    result: list[tuple[int, int]] = []
+    for index, item in enumerate(instructions):
+        if str(item.operator) != "Tj":
+            continue
+        data = bytes(item.operands[0])
+        if len(data) != 1:
+            raise ExactType3NotSupported("Multi-byte Type 3 text runs are not supported")
+        result.append((index, data[0]))
+    return result
+
+
+def _block_end(instructions, start: int) -> int:
+    end = start + 1
+    while end < len(instructions) and str(instructions[end].operator) not in ("Tm", "ET"):
+        end += 1
+    return end
+
+
+def _matching_runs(
+    decoded: str, mapping_by_key: dict[str, str]
+) -> list[tuple[int, int, str, str]]:
+    normalized: list[str] = []
+    positions: list[int] = []
+    for index, char in enumerate(decoded):
+        key = matching_key(char)
+        normalized.extend(key)
+        positions.extend([index] * len(key))
+
+    text = "".join(normalized)
+    keys = sorted(mapping_by_key, key=len, reverse=True)
+    result: list[tuple[int, int, str, str]] = []
+    cursor = 0
+    while cursor < len(text):
+        key = next((candidate for candidate in keys if text.startswith(candidate, cursor)), None)
+        if key is None:
+            cursor += 1
+            continue
+        start = positions[cursor]
+        end = positions[cursor + len(key) - 1] + 1
+        result.append((start, end, key, mapping_by_key[key]))
+        cursor += len(key)
+    return result
+
+
 def _find_title(page):
     for stream in _contents(page):
         instructions = list(pikepdf.parse_content_stream(stream))
         for start, item in enumerate(instructions):
             if str(item.operator) != "Tm" or not _is_title_matrix(item.operands):
                 continue
-            end = start + 1
-            while end < len(instructions) and str(instructions[end].operator) not in ("Tm", "ET"):
-                end += 1
+            end = _block_end(instructions, start)
             return stream, instructions, start, end
     raise ExactType3NotSupported("The precise Type 3 title block was not found")
+
+
+_NUMBER_TOKEN = re.compile(rb"(?<![A-Za-z])[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[Ee][-+]?\d+)?")
 
 
 def _glyph_digest(font, code_map: dict[int, str], code: int) -> str:
@@ -131,7 +180,12 @@ def _glyph_digest(font, code_map: dict[int, str], code: int) -> str:
         glyph = font.CharProcs[code_map[code]]
     except (KeyError, AttributeError) as exc:
         raise ExactType3NotSupported(f"Missing Type 3 glyph code {code}") from exc
-    return hashlib.sha256(glyph.read_bytes()).hexdigest()
+    # CAD exporters vary only the last few decimal places of identical outlines.
+    canonical = _NUMBER_TOKEN.sub(
+        lambda match: f"{float(match.group()):.4f}".encode("ascii"),
+        glyph.read_bytes(),
+    )
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def _custom_stroke_glyph(paths, curves=None) -> bytes:
@@ -259,34 +313,52 @@ def replace_exact_type3(
             for start, item in enumerate(instructions):
                 if str(item.operator) != "Tm":
                     continue
-                end = start + 1
-                while end < len(instructions) and str(instructions[end].operator) not in ("Tm", "ET"):
-                    end += 1
+                end = _block_end(instructions, start)
                 codes = _shown_codes(instructions[start:end])
                 if not codes:
                     continue
                 try:
-                    decoded = "".join(glyph_hash_to_char[_glyph_digest(font, code_map, code)] for code in codes)
-                except (KeyError, ExactType3NotSupported):
+                    decoded = "".join(
+                        glyph_hash_to_char.get(_glyph_digest(font, code_map, code), "\0")
+                        for code in codes
+                    )
+                except ExactType3NotSupported:
                     continue
                 key = matching_key(decoded)
-                if key not in mapping_by_key:
-                    continue
                 fixed = _is_title_matrix(item.operands)
-                if not fixed and not global_search:
-                    continue
-                blocks_by_stream[stream_key].append(
-                    _Block(
-                        stream=stream,
-                        instructions=instructions,
-                        start=start,
-                        end=end,
-                        font=font,
-                        source=decoded,
-                        target=mapping_by_key[key],
-                        fixed=fixed,
+                if key in mapping_by_key:
+                    blocks_by_stream[stream_key].append(
+                        _Block(
+                            stream=stream,
+                            instructions=instructions,
+                            start=start,
+                            end=end,
+                            font=font,
+                            source=decoded,
+                            target=mapping_by_key[key],
+                            fixed=fixed,
+                        )
                     )
-                )
+                    continue
+                if not global_search:
+                    continue
+                for match_start, match_end, match_key, target in _matching_runs(
+                    decoded, mapping_by_key
+                ):
+                    blocks_by_stream[stream_key].append(
+                        _Block(
+                            stream=stream,
+                            instructions=instructions,
+                            start=start,
+                            end=end,
+                            font=font,
+                            source=match_key,
+                            target=target,
+                            fixed=False,
+                            match_start=match_start,
+                            match_end=match_end,
+                        )
+                    )
 
     fixed_count = sum(block.fixed for blocks in blocks_by_stream.values() for block in blocks)
     if fixed_count != len(pdf.pages):
@@ -295,11 +367,37 @@ def replace_exact_type3(
     prepared_fonts: set[tuple[int, int]] = set()
     for stream_key, blocks in blocks_by_stream.items():
         instructions = instruction_lists[stream_key]
-        for block in sorted(blocks, key=lambda item: item.start, reverse=True):
+        for block in sorted(
+            blocks,
+            key=lambda item: (
+                item.start,
+                item.match_start if item.match_start is not None else -1,
+            ),
+            reverse=True,
+        ):
             font_key = tuple(block.font.objgen)
             if block.target and font_key not in prepared_fonts:
                 _add_replacement_glyphs(block.font, canonical_glyphs)
                 prepared_fonts.add(font_key)
+            if block.match_start is not None and block.match_end is not None:
+                current_end = _block_end(instructions, block.start)
+                refs = _shown_code_refs(instructions[block.start:current_end])
+                first_instruction = block.start + refs[block.match_start][0]
+                after_instruction = (
+                    block.start + refs[block.match_end][0]
+                    if block.match_end < len(refs)
+                    else current_end
+                )
+                has_suffix = block.match_end < len(refs)
+                replacement = []
+                for index, char in enumerate(block.target):
+                    replacement.append(
+                        _instruction("Tj", pikepdf.String(bytes([NEW_GLYPH_CODES[char]])))
+                    )
+                    if index != len(block.target) - 1 or has_suffix:
+                        replacement.append(_instruction("TD", ADVANCE[char], 0))
+                instructions[first_instruction:after_instruction] = replacement
+                continue
             old_advance = sum(
                 float(item.operands[0])
                 for item in instructions[block.start : block.end]
@@ -329,5 +427,6 @@ def replace_exact_type3(
             "Font strategy: exact embedded Type 3 CAD glyph reuse",
             "Font size, text matrix and source character spacing were preserved",
             f"Content-stream global matches outside title blocks: {global_count}",
+            "Global matches were replaced in place without redrawing surrounding text",
         ),
     )

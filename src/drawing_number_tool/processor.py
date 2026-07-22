@@ -376,29 +376,49 @@ def _find_global_hits(
     image = render_page(page, dpi)
     spans = ocr.recognize(image)
     for match in find_mapping_matches(spans, set(mapping_by_key)):
-        line_box = match.line_box
-        display_rect = pymupdf.Rect(
-            line_box[0] * page.rect.width / image.width,
-            line_box[1] * page.rect.height / image.height,
-            line_box[2] * page.rect.width / image.width,
-            line_box[3] * page.rect.height / image.height,
-        )
+        hit, display_rect = _ocr_match_hit(page, image, match, mapping_by_key)
         if _rect_overlap_ratio(display_rect, fixed_display) > 0.5:
             continue
-        page_rect = _to_unrotated(page, display_rect)
-        replacement = _replace_mapped_text(match.line_text, mapping_by_key)
-        hits.append(
-            _Hit(
-                source_key=match.key,
-                target=replacement,
-                clear_rect=page_rect,
-                placement_rect=page_rect,
-                kind="OCR 整行重排",
-                display_height=display_rect.height,
-                reflow_line=True,
-            )
-        )
+        hits.append(hit)
     return _deduplicate_hits(hits)
+
+
+def _ocr_match_hit(
+    page: pymupdf.Page,
+    image: Image.Image,
+    match,
+    mapping_by_key: dict[str, str],
+    exact_fallback: bool = False,
+) -> tuple[_Hit, pymupdf.Rect]:
+    standalone = matching_key(match.line_text) == match.key
+    pixel_box = match.line_box if standalone else match.box
+    display_rect = pymupdf.Rect(
+        pixel_box[0] * page.rect.width / image.width,
+        pixel_box[1] * page.rect.height / image.height,
+        pixel_box[2] * page.rect.width / image.width,
+        pixel_box[3] * page.rect.height / image.height,
+    )
+    page_rect = _to_unrotated(page, display_rect)
+    if standalone:
+        target = _replace_mapped_text(match.line_text, mapping_by_key)
+        kind = "OCR 独立文字重排"
+    else:
+        target = mapping_by_key[match.key]
+        kind = "OCR 局部替换"
+    if exact_fallback:
+        kind = f"精确替换后 {kind}"
+    return (
+        _Hit(
+            source_key=match.key,
+            target=target,
+            clear_rect=page_rect,
+            placement_rect=page_rect,
+            kind=kind,
+            display_height=display_rect.height,
+            reflow_line=standalone,
+        ),
+        display_rect,
+    )
 
 
 def _page_text_lines(page: pymupdf.Page) -> list[tuple[str, pymupdf.Rect]]:
@@ -468,8 +488,10 @@ def _deduplicate_hits(hits: list[_Hit]) -> list[_Hit]:
         "选区位置": 4,
         "文本层整行重排": 3,
         "文本层全文命中": 2,
-        "OCR 整行重排": 1,
-        "精确替换后 OCR 整行重排": 1,
+        "OCR 独立文字重排": 1,
+        "OCR 局部替换": 1,
+        "精确替换后 OCR 独立文字重排": 1,
+        "精确替换后 OCR 局部替换": 1,
     }
     for hit in sorted(hits, key=lambda item: priority.get(item.kind, 0), reverse=True):
         if any(
@@ -510,25 +532,14 @@ def _replace_remaining_ocr_hits(
             image = render_page(page, options.global_dpi)
             page_hits: list[_Hit] = []
             for match in find_mapping_matches(ocr.recognize(image), set(mapping_by_key)):
-                line_box = match.line_box
-                display_rect = pymupdf.Rect(
-                    line_box[0] * page.rect.width / image.width,
-                    line_box[1] * page.rect.height / image.height,
-                    line_box[2] * page.rect.width / image.width,
-                    line_box[3] * page.rect.height / image.height,
+                hit, _ = _ocr_match_hit(
+                    page,
+                    image,
+                    match,
+                    mapping_by_key,
+                    exact_fallback=True,
                 )
-                page_rect = _to_unrotated(page, display_rect)
-                page_hits.append(
-                    _Hit(
-                        source_key=match.key,
-                        target=_replace_mapped_text(match.line_text, mapping_by_key),
-                        clear_rect=page_rect,
-                        placement_rect=page_rect,
-                        kind="精确替换后 OCR 整行重排",
-                        display_height=display_rect.height,
-                        reflow_line=True,
-                    )
-                )
+                page_hits.append(hit)
             hits_by_page.append(_deduplicate_hits(page_hits))
 
         count = sum(map(len, hits_by_page))

@@ -18,7 +18,8 @@
 
 - 对当前这类 CAD Type 3 图纸，使用 pikepdf 直接编辑 PDF 内容流，复用原嵌入字形、字号、文字矩阵和字距。缺少的 `Q/K/J` 字形使用匹配的工程单线字形补入字体子集。
 - 对普通 PDF，先尝试文本层和原样式定位，再使用 PyMuPDF 写入。目标字符不在嵌入字体中时会使用内置回退字体，并把字体和字号策略写入日志。
-- 全文命中会按完整文字行清除并统一重排，避免只替换局部后出现字号、字距和空隙不一致。
+- 对当前这类 CAD Type 3 图纸，全文命中会直接替换原内容流中的编号片段，周围文字、字号、矩阵和字距保持不变。
+- 对无法直接编辑的扫描内容，独立文字按完整区域重排；位于长句中的命中只处理局部，避免 OCR 误差破坏整句。
 - 手动选择 Windows 字体后，选区位置和全文重排均使用该字体；所选字体缺少目标字符时会停止并明确提示。
 - 任意 PDF 若未嵌入目标字符，数学上无法保证得到完全相同的原字体。软件不会隐瞒这种情况；日志中的“精确保留嵌入字体”字段会明确标识。
 
@@ -26,10 +27,10 @@
 
 仓库的 `Build Windows portable` GitHub Actions 工作流会在每次推送到 `main` 或手动触发时构建：
 
-- 版本号取当前提交日期，格式 `YYYYMMDD`，例如 `20260722`。
-- Windows 文件版本使用等价的 `YYYY.M.D.0`，产品版本显示 `YYYYMMDD`。
-- Release 标签为 `YYYYMMDD`，同一天重复构建会更新该 Release。
-- 下载文件统一命名为 `PDFTextReplace-YYYYMMDD-win64.zip`，校验文件为同名 `.sha256`。
+- Release 名称固定为 `PDFTextReplace`，每次构建重新发布，不显示旧 Release 的编辑时间。
+- GitHub 要求每个 Release 关联一个 tag，因此内部关联名同样固定为 `PDFTextReplace`；工作流会清理旧的日期标签。
+- 下载文件固定命名为 `PDFTextReplace.zip`，校验文件为 `PDFTextReplace.zip.sha256`。
+- Windows 文件版本仍取提交日期，仅用于程序属性和问题定位，不出现在 Release 名称中。
 - 解压后直接运行 `PDFTextReplace.exe`，无需管理员权限或安装环境。程序目录顶层只包含可执行文件、`runtime` 和 `licenses`，不附带开发文档。
 
 在 GitHub 仓库的 **Releases** 页面直接下载便携包。
