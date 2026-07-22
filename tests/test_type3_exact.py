@@ -2,55 +2,75 @@ from pathlib import Path
 
 import pikepdf
 
-from drawing_number_tool.models import NormalizedRect, PageRecognition, ProcessOptions, build_mapping
-from drawing_number_tool.type3_exact import _contents, _shown_codes, replace_exact_type3
-
-
-SAMPLE_TITLES = (
-    "07-0226AZ01B",
-    "07-0226AZ02A",
-    "07-0226AZ05A",
-    "07-0226AZ17B",
-    "07-0226AZ17B",
-    "07-0226AZ28A",
-    "07-0226AZ29A",
-    "07-0324LE01A",
-    "07-0324LE05A",
-    "07-0324LE08A",
-    "07-0324LE09A",
-    "07-0324LE10A",
-    "07-0324LE12A",
-    "07-0325HR02A",
-    "07-0325HV01B",
-    "07-0325HV05A",
-    "07-0325HV06B",
-    "07-0325HV07B",
-    "07-0325HV08B",
-    "07-0325HV09B",
-    "07-0325HV10B",
-    "07-0325HV11A",
-    "07-0325HV12B",
-    "07-0325HV13B",
-    "07-0325HV14B",
-    "07-0325HV18B",
-    "07-0325HV19B",
-    "07-0325HV20A",
-    "07-0325HV21A",
-    "07-0325HV22A",
-    "07-0325HV23B",
-    "07-0325HV24B",
-    "07-0325HV25B",
-    "07-0325HV26A",
-    "07-0325HV29C",
-    "07-0326DU01A",
-    "07-0326DU02A",
-    "07-0326DU03A",
-    "07-0326DU05A",
-    "07-0326DU06A",
-    "07-0326GR11A",
-    "08-0226AZ05B",
-    "08-0226DT01A",
+from drawing_number_tool.models import NormalizedRect, PageRecognition
+from drawing_number_tool.type3_exact import (
+    NEW_GLYPH_CODES,
+    _contents,
+    _shown_codes,
+    replace_exact_type3,
 )
+
+
+SOURCE_TEXT = "0123456789BJKLQR-"
+
+
+def _create_type3_fixture(path: Path) -> None:
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(900, 900))
+    glyph_names = [pikepdf.Name(f"/glyph{index}") for index in range(19)]
+    char_procs = pikepdf.Dictionary()
+    for index, name in enumerate(glyph_names):
+        char_procs[name] = pikepdf.Stream(
+            pdf,
+            (
+                "1 0 -10 -10 10 10 d1\n"
+                f"{index} 0 m\n"
+                f"{index} {index + 1} l\n"
+                "S\n"
+            ).encode("ascii"),
+        )
+
+    font = pdf.make_indirect(
+        pikepdf.Dictionary(
+            Type=pikepdf.Name.Font,
+            Subtype=pikepdf.Name.Type3,
+            FontBBox=pikepdf.Array([-10, -10, 20, 20]),
+            FontMatrix=pikepdf.Array([1, 0, 0, 1, 0, 0]),
+            CharProcs=char_procs,
+            Encoding=pikepdf.Dictionary(
+                Type=pikepdf.Name.Encoding,
+                Differences=pikepdf.Array([0, *glyph_names]),
+            ),
+            FirstChar=0,
+            LastChar=18,
+            Widths=pikepdf.Array([1] * 19),
+            Resources=pikepdf.Dictionary(),
+        )
+    )
+    page.Resources = pikepdf.Dictionary(Font=pikepdf.Dictionary(F1=font))
+
+    phrase_codes = [0, *range(1, 18), 18]
+    title_codes = list(range(1, 18))
+
+    def text_run(codes: list[int]) -> list[str]:
+        lines: list[str] = []
+        for index, code in enumerate(codes):
+            lines.append(f"<{code:02x}> Tj")
+            if index != len(codes) - 1:
+                lines.append("0.35 0 TD")
+        return lines
+
+    content = [
+        "BT",
+        "/F1 1 Tf",
+        "0 8.76 -8.762 0 31.4673 69.7771 Tm",
+        *text_run(phrase_codes),
+        "0 9.8776 -9.8889 0 531.2477 761.1565 Tm",
+        *text_run(title_codes),
+        "ET",
+    ]
+    page.Contents = pikepdf.Stream(pdf, ("\n".join(content) + "\n").encode("ascii"))
+    pdf.save(path)
 
 
 def _longest_text_block(page) -> tuple[list[float], list[int]]:
@@ -69,31 +89,33 @@ def _longest_text_block(page) -> tuple[list[float], list[int]]:
     return longest
 
 
-def test_sample_global_replacement_preserves_surrounding_type3_sentence(tmp_path: Path) -> None:
-    source = Path(__file__).parents[1] / "samples" / "图纸26072201.pdf"
+def test_global_replacement_preserves_surrounding_type3_sentence(tmp_path: Path) -> None:
+    source = tmp_path / "source.pdf"
     output = tmp_path / "output.pdf"
-    selection = NormalizedRect(0.89, 0.85, 0.97, 0.92)
-    recognitions = [
-        PageRecognition(index, title, selection)
-        for index, title in enumerate(SAMPLE_TITLES, 1)
-    ]
-    _, mapping = build_mapping(recognitions, ProcessOptions(global_search=True))
+    _create_type3_fixture(source)
+    selection = NormalizedRect(0.80, 0.80, 0.95, 0.95)
+    recognitions = [PageRecognition(1, SOURCE_TEXT, selection)]
+    target = "210"
 
-    result = replace_exact_type3(source, output, recognitions, mapping, global_search=True)
+    result = replace_exact_type3(
+        source,
+        output,
+        recognitions,
+        {SOURCE_TEXT: target},
+        global_search=True,
+    )
 
-    assert result.fixed_replacements == 43
-    assert result.global_replacements == 2
+    assert result.fixed_replacements == 1
+    assert result.global_replacements == 1
     original = pikepdf.open(source)
     replaced = pikepdf.open(output)
     try:
-        for page_number, mapping_key in ((7, "07-0226AZ02A"), (40, "07-0326DU05A")):
-            old_matrix, old_codes = _longest_text_block(original.pages[page_number - 1])
-            new_matrix, new_codes = _longest_text_block(replaced.pages[page_number - 1])
-            target = mapping[mapping_key]
-            assert new_matrix == old_matrix
-            assert new_codes[:5] == old_codes[:5]
-            assert new_codes[5 + len(target) :] == old_codes[17:]
-            assert all(code >= 200 for code in new_codes[5 : 5 + len(target)])
+        old_matrix, old_codes = _longest_text_block(original.pages[0])
+        new_matrix, new_codes = _longest_text_block(replaced.pages[0])
+        assert new_matrix == old_matrix
+        assert new_codes[:1] == old_codes[:1]
+        assert new_codes[1 + len(target) :] == old_codes[18:]
+        assert new_codes[1 : 1 + len(target)] == [NEW_GLYPH_CODES[char] for char in target]
     finally:
         original.close()
         replaced.close()
