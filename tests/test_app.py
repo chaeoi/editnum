@@ -1,4 +1,4 @@
-from drawing_number_tool.app import _drag_bounds
+from editnum.app import _drag_bounds
 
 
 def test_selection_requires_a_real_drag_in_both_directions() -> None:

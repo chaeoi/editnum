@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pikepdf
 
-from drawing_number_tool.models import NormalizedRect, PageRecognition
-from drawing_number_tool.type3_exact import (
+from editnum.models import NormalizedRect, PageRecognition
+from editnum.type3_exact import (
     NEW_GLYPH_CODES,
     _contents,
     _shown_codes,

@@ -1,5 +1,5 @@
-from drawing_number_tool.models import OcrSpan
-from drawing_number_tool.ocr import find_mapping_matches, primary_text
+from editnum.models import OcrSpan
+from editnum.ocr import find_mapping_matches, primary_text
 
 
 def test_primary_text_chooses_longest_line() -> None:

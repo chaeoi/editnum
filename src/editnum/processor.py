@@ -811,7 +811,7 @@ def _write_log(
     detail_lines: list[str],
 ) -> None:
     lines = [
-        "PDF 批量文字替换日志",
+        "EditNUM 处理日志",
         f"软件版本：{__version__}",
         f"处理时间：{datetime.now().astimezone().isoformat(timespec='seconds')}",
         f"源文件：{source_path}",

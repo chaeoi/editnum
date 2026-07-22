@@ -68,10 +68,10 @@ def _drag_bounds(
     return x0, y0, x1, y1
 
 
-class PdfTextReplaceApp:
+class EditNumApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title(f"PDF 批量文字替换 {__version__}")
+        self.root.title(f"EditNUM {__version__}")
         self.root.geometry("1440x900")
         self.root.minsize(1180, 720)
 
@@ -738,5 +738,5 @@ def run() -> None:
     except (AttributeError, OSError):
         pass
     root = tk.Tk()
-    PdfTextReplaceApp(root)
+    EditNumApp(root)
     root.mainloop()

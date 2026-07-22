@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pymupdf
 
-from drawing_number_tool.models import NormalizedRect, PageRecognition, ProcessOptions
-from drawing_number_tool.processor import _replace_mapped_text, process_document
+from editnum.models import NormalizedRect, PageRecognition, ProcessOptions
+from editnum.processor import _replace_mapped_text, process_document
 
 
 class EmptyOcr:

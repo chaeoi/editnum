@@ -3,20 +3,20 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pdf-batch-text-replacer"
+name = "editnum"
 dynamic = ["version"]
-description = "Offline PDF text recognition and batch replacement tool"
+description = "EditNUM offline PDF text recognition and batch replacement tool"
 readme = "README.md"
 requires-python = ">=3.10"
 
 [project.scripts]
-pdf-text-replace = "drawing_number_tool.cli:main"
+editnum = "editnum.cli:main"
 
 [project.gui-scripts]
-pdf-text-replace-gui = "drawing_number_tool.app:run"
+editnum-gui = "editnum.app:run"
 
 [tool.setuptools.dynamic]
-version = {attr = "drawing_number_tool.version.__version__"}
+version = {attr = "editnum.version.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]

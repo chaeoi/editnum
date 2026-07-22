@@ -1,4 +1,4 @@
-from drawing_number_tool.models import (
+from editnum.models import (
     NormalizedRect,
     PageRecognition,
     ProcessOptions,

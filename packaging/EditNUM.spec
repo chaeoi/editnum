@@ -12,7 +12,7 @@ ort_binaries = collect_dynamic_libs("onnxruntime")
 version_file = root / "build" / "version_info.txt"
 
 a = Analysis(
-    [str(source_root / "drawing_number_tool" / "__main__.py")],
+    [str(source_root / "editnum" / "__main__.py")],
     pathex=[str(source_root)],
     binaries=rapid_binaries + pike_binaries + ort_binaries,
     datas=rapid_datas + pike_datas,
@@ -31,7 +31,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="PDFTextReplace",
+    name="EditNUM",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -53,5 +53,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="PDFTextReplace",
+    name="EditNUM",
 )
