@@ -1,5 +1,8 @@
+# User input and generated output
 *.[pP][dD][fF]
 *.log
+
+# Python environments and caches
 .venv/
 __pycache__/
 .pytest_cache/
@@ -7,6 +10,17 @@ __pycache__/
 *.egg-info/
 .coverage
 htmlcov/
+
+# Build artifacts
 build/
 dist/
 *.spec.bak
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.tmp
+*.swp
