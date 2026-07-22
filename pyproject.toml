@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-drawing-number-tool"
+dynamic = ["version"]
+description = "Offline PDF drawing-number recognition and replacement tool"
+readme = "README.md"
+requires-python = ">=3.10"
+
+[project.scripts]
+pdf-drawing-number = "drawing_number_tool.cli:main"
+
+[project.gui-scripts]
+pdf-drawing-number-gui = "drawing_number_tool.app:run"
+
+[tool.setuptools.dynamic]
+version = {attr = "drawing_number_tool.version.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"

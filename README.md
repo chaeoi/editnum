@@ -33,15 +33,29 @@
 
 ```bash
 python -m venv .venv
-.venv/bin/pip install -r requirements-build.txt
-.venv/bin/python main.py
+.venv/bin/pip install -r requirements/build.txt
+.venv/bin/python -m drawing_number_tool
 .venv/bin/python -m pytest -q
 ```
 
 命令行模式需要传入归一化区域：
 
 ```bash
-python replace_drawing_numbers.py input.pdf --rect 0.84,0.86,0.995,0.92
+.venv/bin/python -m drawing_number_tool.cli input.pdf --rect 0.84,0.86,0.995,0.92
+```
+
+## 仓库结构
+
+```text
+.
+├── src/drawing_number_tool/   # GUI、CLI、OCR 与 PDF 处理核心
+├── tests/                     # 单元测试和通用 PDF 回归测试
+├── packaging/                 # Windows PyInstaller 配置
+├── requirements/              # 运行及构建依赖锁定
+├── docs/                      # 第三方组件与许可说明
+├── .github/workflows/         # Windows 便携包 CI
+├── pyproject.toml             # Python 项目与工具配置
+└── README.md
 ```
 
 ## 上游项目
@@ -51,4 +65,4 @@ python replace_drawing_numbers.py input.pdf --rect 0.84,0.86,0.995,0.92
 - [RapidOCR](https://github.com/RapidAI/RapidOCR) 与 [ONNX Runtime](https://github.com/microsoft/onnxruntime)：离线 OCR。
 - [PyInstaller](https://github.com/pyinstaller/pyinstaller)：Windows 便携运行环境打包。
 
-许可信息见 `THIRD_PARTY_NOTICES.md`。由于使用 PyMuPDF，分发本项目构建产物时需遵守 AGPL-3.0，或另行取得 Artifex 商业许可。
+许可信息见 `docs/THIRD_PARTY_NOTICES.md`。由于使用 PyMuPDF，分发本项目构建产物时需遵守 AGPL-3.0，或另行取得 Artifex 商业许可。

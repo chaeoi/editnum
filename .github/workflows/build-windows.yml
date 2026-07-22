@@ -34,7 +34,7 @@ jobs:
           $parts = $commitDate.Split("-")
           $fileVersion = "$([int]$parts[0]), $([int]$parts[1]), $([int]$parts[2]), 0"
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "__version__ = `"$version`"" | Out-File drawing_number_tool/version.py -Encoding utf8
+          "__version__ = `"$version`"" | Out-File src/drawing_number_tool/version.py -Encoding utf8
           New-Item -ItemType Directory -Force build | Out-Null
           @"
           VSVersionInfo(
@@ -52,18 +52,18 @@ jobs:
           "@ | Out-File build/version_info.txt -Encoding utf8
 
       - name: Install build dependencies
-        run: python -m pip install -r requirements-build.txt
+        run: python -m pip install -r requirements/build.txt
 
       - name: Cache OCR models in package
         run: python -c "from rapidocr import RapidOCR; RapidOCR(); print('OCR models ready')"
 
       - name: Run tests
         run: |
-          ruff check drawing_number_tool main.py replace_drawing_numbers.py tests
+          ruff check src tests
           python -m pytest -q
 
       - name: Build portable application
-        run: pyinstaller --noconfirm --clean PDFDrawingNumberTool.spec
+        run: pyinstaller --noconfirm --clean packaging/PDFDrawingNumberTool.spec
 
       - name: Smoke-test packaged executable
         shell: pwsh
@@ -77,7 +77,7 @@ jobs:
         shell: pwsh
         run: |
           $version = '${{ steps.version.outputs.version }}'
-          Copy-Item README.md,THIRD_PARTY_NOTICES.md -Destination 'dist/PDF图号替换工具'
+          Copy-Item README.md,docs/THIRD_PARTY_NOTICES.md -Destination 'dist/PDF图号替换工具'
           $pymupdfLicense = python -c "import importlib.metadata as m; print(m.distribution('PyMuPDF')._path / 'COPYING')"
           $pikepdfLicenses = python -c "import importlib.metadata as m; print(m.distribution('pikepdf')._path / 'licenses')"
           Copy-Item $pymupdfLicense 'dist/PDF图号替换工具/LICENSE-AGPL-3.0.txt'

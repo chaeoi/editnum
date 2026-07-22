@@ -4,15 +4,16 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs
 
 
-root = Path(SPECPATH)
+root = Path(SPECPATH).parent
+source_root = root / "src"
 rapid_datas, rapid_binaries, rapid_hiddenimports = collect_all("rapidocr")
 pike_datas, pike_binaries, pike_hiddenimports = collect_all("pikepdf")
 ort_binaries = collect_dynamic_libs("onnxruntime")
 version_file = root / "build" / "version_info.txt"
 
 a = Analysis(
-    [str(root / "main.py")],
-    pathex=[str(root)],
+    [str(source_root / "drawing_number_tool" / "__main__.py")],
+    pathex=[str(source_root)],
     binaries=rapid_binaries + pike_binaries + ort_binaries,
     datas=rapid_datas + pike_datas,
     hiddenimports=rapid_hiddenimports + pike_hiddenimports,

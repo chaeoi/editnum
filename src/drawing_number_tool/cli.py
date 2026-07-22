@@ -4,9 +4,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from drawing_number_tool.models import NormalizedRect, ProcessOptions
-from drawing_number_tool.ocr import RapidOcrEngine
-from drawing_number_tool.processor import process_document, recognize_fixed_regions
+from .models import NormalizedRect, ProcessOptions
+from .ocr import RapidOcrEngine
+from .processor import process_document, recognize_fixed_regions
 
 
 def _selection(value: str) -> NormalizedRect:
