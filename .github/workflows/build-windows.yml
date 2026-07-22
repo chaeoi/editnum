@@ -1,0 +1,97 @@
+name: Build Windows portable
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Derive version from commit date
+        id: version
+        shell: pwsh
+        run: |
+          $commitDate = git show -s --format=%cs HEAD
+          $version = $commitDate.Replace("-", "")
+          $parts = $commitDate.Split("-")
+          $fileVersion = "$([int]$parts[0]), $([int]$parts[1]), $([int]$parts[2]), 0"
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "__version__ = `"$version`"" | Out-File drawing_number_tool/version.py -Encoding utf8
+          New-Item -ItemType Directory -Force build | Out-Null
+          @"
+          VSVersionInfo(
+            ffi=FixedFileInfo(filevers=($fileVersion), prodvers=($fileVersion), mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),
+            kids=[StringFileInfo([StringTable('080404b0', [
+              StringStruct('CompanyName', 'editnum'),
+              StringStruct('FileDescription', 'PDF图号替换工具'),
+              StringStruct('FileVersion', '$version'),
+              StringStruct('InternalName', 'PDFDrawingNumberTool'),
+              StringStruct('OriginalFilename', 'PDF图号替换工具.exe'),
+              StringStruct('ProductName', 'PDF图号替换工具'),
+              StringStruct('ProductVersion', '$version')
+            ])]), VarFileInfo([VarStruct('Translation', [2052, 1200])])]
+          )
+          "@ | Out-File build/version_info.txt -Encoding utf8
+
+      - name: Install build dependencies
+        run: python -m pip install -r requirements-build.txt
+
+      - name: Cache OCR models in package
+        run: python -c "from rapidocr import RapidOCR; RapidOCR(); print('OCR models ready')"
+
+      - name: Run tests
+        run: |
+          ruff check drawing_number_tool main.py replace_drawing_numbers.py tests
+          python -m pytest -q
+
+      - name: Build portable application
+        run: pyinstaller --noconfirm --clean PDFDrawingNumberTool.spec
+
+      - name: Smoke-test packaged executable
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path dist -Filter *.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { throw "Packaged executable was not found" }
+          $process = Start-Process -FilePath $exe.FullName -ArgumentList '--self-test' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Packaged executable self-test failed: $($process.ExitCode)" }
+
+      - name: Create portable ZIP
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          Copy-Item README.md,THIRD_PARTY_NOTICES.md -Destination 'dist/PDF图号替换工具'
+          $pymupdfLicense = python -c "import importlib.metadata as m; print(m.distribution('PyMuPDF')._path / 'COPYING')"
+          $pikepdfLicenses = python -c "import importlib.metadata as m; print(m.distribution('pikepdf')._path / 'licenses')"
+          Copy-Item $pymupdfLicense 'dist/PDF图号替换工具/LICENSE-AGPL-3.0.txt'
+          Copy-Item $pikepdfLicenses 'dist/PDF图号替换工具/pikepdf-licenses' -Recurse
+          $zip = "PDFDrawingNumberTool-$version-win64-portable.zip"
+          Compress-Archive -Path 'dist/PDF图号替换工具' -DestinationPath $zip -CompressionLevel Optimal
+          (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() + "  " + $zip | Out-File "$zip.sha256" -Encoding ascii
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PDFDrawingNumberTool-${{ steps.version.outputs.version }}-win64-portable
+          path: |
+            PDFDrawingNumberTool-*-win64-portable.zip
+            PDFDrawingNumberTool-*-win64-portable.zip.sha256
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,688 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+import math
+import os
+from pathlib import Path
+import threading
+from typing import Callable
+
+import pymupdf
+from PIL import Image
+
+from .models import (
+    NormalizedRect,
+    PageRecognition,
+    ProcessOptions,
+    ProcessReport,
+    build_mapping,
+    matching_key,
+)
+from .ocr import OcrError, RapidOcrEngine, find_mapping_matches, primary_text
+from .type3_exact import ExactType3NotSupported, replace_exact_type3
+from .version import __version__
+
+
+ProgressCallback = Callable[[int, int, str], None]
+
+
+def _noop_progress(current: int, total: int, message: str) -> None:
+    del current, total, message
+
+
+def _check_cancel(cancel_event: threading.Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise InterruptedError("Operation cancelled")
+
+
+def render_page(page: pymupdf.Page, dpi: int) -> Image.Image:
+    pixmap = page.get_pixmap(matrix=pymupdf.Matrix(dpi / 72, dpi / 72), alpha=False)
+    return Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
+
+
+def recognize_fixed_regions(
+    source_path: Path,
+    selection: NormalizedRect,
+    options: ProcessOptions,
+    ocr: RapidOcrEngine | None = None,
+    progress: ProgressCallback = _noop_progress,
+    cancel_event: threading.Event | None = None,
+) -> list[PageRecognition]:
+    options.validate()
+    engine = ocr or RapidOcrEngine()
+    document = pymupdf.open(source_path)
+    recognitions: list[PageRecognition] = []
+    total = len(document)
+    try:
+        for index, page in enumerate(document):
+            _check_cancel(cancel_event)
+            progress(index, total, f"正在识别第 {index + 1}/{total} 页")
+            image = render_page(page, options.fixed_dpi)
+            crop_box = _pixel_box(selection, image.width, image.height)
+            spans = engine.recognize(image.crop(crop_box))
+            try:
+                text, confidence, local_box = primary_text(spans)
+            except OcrError as exc:
+                raise OcrError(f"第 {index + 1} 页选定区域未识别到文本") from exc
+            global_box = (
+                crop_box[0] + local_box[0],
+                crop_box[1] + local_box[1],
+                crop_box[0] + local_box[2],
+                crop_box[1] + local_box[3],
+            )
+            text_rect = NormalizedRect(
+                max(0.0, global_box[0] / image.width),
+                max(0.0, global_box[1] / image.height),
+                min(1.0, global_box[2] / image.width),
+                min(1.0, global_box[3] / image.height),
+            )
+            recognitions.append(
+                PageRecognition(
+                    page_number=index + 1,
+                    source=text,
+                    confidence=confidence,
+                    text_rect=text_rect,
+                    raw_text=text,
+                )
+            )
+        progress(total, total, "固定区域识别完成")
+        return recognitions
+    finally:
+        document.close()
+
+
+def _pixel_box(rect: NormalizedRect, width: int, height: int) -> tuple[int, int, int, int]:
+    return (
+        max(0, int(rect.x0 * width)),
+        max(0, int(rect.y0 * height)),
+        min(width, max(1, math.ceil(rect.x1 * width))),
+        min(height, max(1, math.ceil(rect.y1 * height))),
+    )
+
+
+@dataclass
+class _Hit:
+    source_key: str
+    target: str
+    clear_rect: pymupdf.Rect
+    placement_rect: pymupdf.Rect
+    kind: str
+    confidence: float
+    display_height: float
+
+
+def process_document(
+    source_path: Path,
+    output_path: Path,
+    selection: NormalizedRect,
+    recognitions: list[PageRecognition],
+    options: ProcessOptions,
+    ocr: RapidOcrEngine | None = None,
+    progress: ProgressCallback = _noop_progress,
+    cancel_event: threading.Event | None = None,
+) -> ProcessReport:
+    options.validate()
+    source_path = source_path.resolve()
+    output_path = output_path.resolve()
+    if source_path == output_path:
+        raise ValueError("Output PDF must not overwrite the source PDF")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path = output_path.with_suffix(".log")
+    entries, mapping_by_key = build_mapping(recognitions, options)
+    warnings = [
+        f"第 {item.page_number} 页 OCR 置信度较低：{item.confidence:.1%}"
+        for item in recognitions
+        if item.confidence < options.minimum_confidence
+    ]
+
+    _check_cancel(cancel_event)
+    exact_result = None
+    exact_failure = ""
+    progress(0, 1, "正在检查嵌入字体精确替换")
+    try:
+        exact_result = replace_exact_type3(
+            source_path,
+            output_path,
+            recognitions,
+            mapping_by_key,
+            global_search=options.global_search,
+        )
+    except ExactType3NotSupported as exc:
+        exact_failure = str(exc)
+
+    if exact_result is not None:
+        supplemental_count = 0
+        supplemental_exact = True
+        supplemental_lines: list[str] = []
+        if options.global_search:
+            supplemental_count, supplemental_exact = _replace_remaining_ocr_hits(
+                output_path,
+                mapping_by_key,
+                options.global_dpi,
+                ocr or RapidOcrEngine(),
+                progress,
+                cancel_event,
+                warnings,
+                supplemental_lines,
+            )
+        report = ProcessReport(
+            output_path=str(output_path),
+            log_path=str(log_path),
+            page_count=len(recognitions),
+            mappings=entries,
+            fixed_replacements=exact_result.fixed_replacements,
+            global_replacements=exact_result.global_replacements + supplemental_count,
+            exact_font_preserved=supplemental_exact,
+            warnings=warnings,
+        )
+        _write_log(
+            log_path,
+            source_path,
+            selection,
+            recognitions,
+            options,
+            report,
+            list(exact_result.log_lines) + supplemental_lines,
+        )
+        progress(1, 1, "PDF 与日志已生成")
+        return report
+
+    visual_lines = [f"精确 Type 3 路径不可用：{exact_failure}"]
+    visual_count, visual_fonts_exact = _replace_visually(
+        source_path,
+        output_path,
+        selection,
+        recognitions,
+        mapping_by_key,
+        options,
+        ocr or RapidOcrEngine(),
+        progress,
+        cancel_event,
+        warnings,
+        visual_lines,
+    )
+    report = ProcessReport(
+        output_path=str(output_path),
+        log_path=str(log_path),
+        page_count=len(recognitions),
+        mappings=entries,
+        fixed_replacements=len(recognitions),
+        global_replacements=visual_count,
+        exact_font_preserved=visual_fonts_exact,
+        warnings=warnings,
+    )
+    _write_log(
+        log_path,
+        source_path,
+        selection,
+        recognitions,
+        options,
+        report,
+        visual_lines,
+    )
+    return report
+
+
+def _display_rect(page: pymupdf.Page, rect: NormalizedRect) -> pymupdf.Rect:
+    return pymupdf.Rect(
+        rect.x0 * page.rect.width,
+        rect.y0 * page.rect.height,
+        rect.x1 * page.rect.width,
+        rect.y1 * page.rect.height,
+    )
+
+
+def _to_unrotated(page: pymupdf.Page, rect: pymupdf.Rect) -> pymupdf.Rect:
+    transformed = rect * page.derotation_matrix
+    return pymupdf.Rect(
+        min(transformed.x0, transformed.x1),
+        min(transformed.y0, transformed.y1),
+        max(transformed.x0, transformed.x1),
+        max(transformed.y0, transformed.y1),
+    )
+
+
+def _replace_visually(
+    source_path: Path,
+    output_path: Path,
+    selection: NormalizedRect,
+    recognitions: list[PageRecognition],
+    mapping_by_key: dict[str, str],
+    options: ProcessOptions,
+    ocr: RapidOcrEngine,
+    progress: ProgressCallback,
+    cancel_event: threading.Event | None,
+    warnings: list[str],
+    log_lines: list[str],
+) -> tuple[int, bool]:
+    document = pymupdf.open(source_path)
+    if len(document) != len(recognitions):
+        document.close()
+        raise ValueError("Page count changed after recognition")
+    hits_by_page: list[list[_Hit]] = []
+    global_count = 0
+    total_steps = len(document) * (2 if options.global_search else 1)
+    all_fonts_exact = True
+    try:
+        for index, page in enumerate(document):
+            _check_cancel(cancel_event)
+            recognition = recognitions[index]
+            source_key = matching_key(recognition.source)
+            fixed_clear_display = _display_rect(page, recognition.text_rect)
+            fixed_place_display = _display_rect(page, selection)
+            hits = [
+                _Hit(
+                    source_key=source_key,
+                    target=mapping_by_key[source_key],
+                    clear_rect=_to_unrotated(page, fixed_clear_display),
+                    placement_rect=_to_unrotated(page, fixed_place_display),
+                    kind="固定区域",
+                    confidence=recognition.confidence,
+                    display_height=fixed_clear_display.height,
+                )
+            ]
+            if options.global_search:
+                progress(index, total_steps, f"正在全页搜索第 {index + 1}/{len(document)} 页")
+                hits.extend(
+                    _find_global_hits(
+                        page,
+                        mapping_by_key,
+                        fixed_clear_display,
+                        options.global_dpi,
+                        ocr,
+                    )
+                )
+                global_count += len(hits) - 1
+            hits_by_page.append(_deduplicate_hits(hits))
+
+        for index, (page, hits) in enumerate(zip(document, hits_by_page)):
+            _check_cancel(cancel_event)
+            progress(
+                len(document) + index if options.global_search else index,
+                total_steps,
+                f"正在写入第 {index + 1}/{len(document)} 页",
+            )
+            styles = [_detect_style(document, page, hit) for hit in hits]
+            for hit in hits:
+                clear_rect = pymupdf.Rect(hit.clear_rect)
+                clear_rect.x0 -= 0.6
+                clear_rect.y0 -= 0.6
+                clear_rect.x1 += 0.6
+                clear_rect.y1 += 0.6
+                page.add_redact_annot(clear_rect, fill=(1, 1, 1), cross_out=False)
+            page.apply_redactions(images=2, graphics=0, text=0)
+            for hit, style in zip(hits, styles):
+                used_size, strategy, font_exact = _insert_replacement(document, page, hit, style)
+                all_fonts_exact = all_fonts_exact and font_exact
+                log_lines.append(
+                    f"第 {index + 1} 页 {hit.kind}：{hit.target}，字体={strategy}，字号={used_size:.2f}"
+                )
+                if used_size + 0.05 < style.font_size:
+                    warning = (
+                        f"第 {index + 1} 页 {hit.kind}因空间不足，字号由 "
+                        f"{style.font_size:.2f} 调整为 {used_size:.2f}"
+                    )
+                    warnings.append(warning)
+            page.clean_contents()
+        document.save(output_path, garbage=4, deflate=True)
+        progress(total_steps, total_steps, "PDF 与日志已生成")
+        return global_count, all_fonts_exact
+    finally:
+        document.close()
+
+
+def _find_global_hits(
+    page: pymupdf.Page,
+    mapping_by_key: dict[str, str],
+    fixed_display: pymupdf.Rect,
+    dpi: int,
+    ocr: RapidOcrEngine,
+) -> list[_Hit]:
+    hits: list[_Hit] = []
+    for source_key, target in mapping_by_key.items():
+        for source_rect in page.search_for(source_key):
+            display_rect = source_rect * page.rotation_matrix
+            if _rect_overlap_ratio(display_rect, fixed_display) > 0.5:
+                continue
+            hits.append(
+                _Hit(
+                    source_key=source_key,
+                    target=target,
+                    clear_rect=pymupdf.Rect(source_rect),
+                    placement_rect=pymupdf.Rect(source_rect),
+                    kind="文本层全局命中",
+                    confidence=1.0,
+                    display_height=display_rect.height,
+                )
+            )
+
+    image = render_page(page, dpi)
+    spans = ocr.recognize(image)
+    for match in find_mapping_matches(spans, set(mapping_by_key)):
+        display_rect = pymupdf.Rect(
+            match.box[0] * page.rect.width / image.width,
+            match.box[1] * page.rect.height / image.height,
+            match.box[2] * page.rect.width / image.width,
+            match.box[3] * page.rect.height / image.height,
+        )
+        if _rect_overlap_ratio(display_rect, fixed_display) > 0.5:
+            continue
+        page_rect = _to_unrotated(page, display_rect)
+        hits.append(
+            _Hit(
+                source_key=match.key,
+                target=mapping_by_key[match.key],
+                clear_rect=page_rect,
+                placement_rect=page_rect,
+                kind="OCR 全局命中",
+                confidence=match.confidence,
+                display_height=display_rect.height,
+            )
+        )
+    return _deduplicate_hits(hits)
+
+
+def _rect_overlap_ratio(a: pymupdf.Rect, b: pymupdf.Rect) -> float:
+    intersection = a & b
+    if intersection.is_empty:
+        return 0.0
+    denominator = max(0.001, min(a.get_area(), b.get_area()))
+    return intersection.get_area() / denominator
+
+
+def _deduplicate_hits(hits: list[_Hit]) -> list[_Hit]:
+    result: list[_Hit] = []
+    priority = {"固定区域": 3, "文本层全局命中": 2, "OCR 全局命中": 1}
+    for hit in sorted(hits, key=lambda item: priority.get(item.kind, 0), reverse=True):
+        if any(
+            hit.source_key == old.source_key
+            and _rect_overlap_ratio(hit.clear_rect, old.clear_rect) > 0.55
+            for old in result
+        ):
+            continue
+        result.append(hit)
+    return result
+
+
+def _replace_remaining_ocr_hits(
+    output_path: Path,
+    mapping_by_key: dict[str, str],
+    dpi: int,
+    ocr: RapidOcrEngine,
+    progress: ProgressCallback,
+    cancel_event: threading.Event | None,
+    warnings: list[str],
+    log_lines: list[str],
+) -> tuple[int, bool]:
+    """Find visual old-number remnants after exact stream replacement.
+
+    Any normal Type 3 text occurrences have already been replaced. This pass
+    catches old numbers baked into images or converted to vector outlines.
+    """
+    document = pymupdf.open(output_path)
+    hits_by_page: list[list[_Hit]] = []
+    total = len(document)
+    try:
+        for index, page in enumerate(document):
+            _check_cancel(cancel_event)
+            progress(index, total, f"正在检查全页残留 {index + 1}/{total} 页")
+            image = render_page(page, dpi)
+            page_hits: list[_Hit] = []
+            for match in find_mapping_matches(ocr.recognize(image), set(mapping_by_key)):
+                display_rect = pymupdf.Rect(
+                    match.box[0] * page.rect.width / image.width,
+                    match.box[1] * page.rect.height / image.height,
+                    match.box[2] * page.rect.width / image.width,
+                    match.box[3] * page.rect.height / image.height,
+                )
+                page_rect = _to_unrotated(page, display_rect)
+                page_hits.append(
+                    _Hit(
+                        source_key=match.key,
+                        target=mapping_by_key[match.key],
+                        clear_rect=page_rect,
+                        placement_rect=page_rect,
+                        kind="精确替换后 OCR 残留",
+                        confidence=match.confidence,
+                        display_height=display_rect.height,
+                    )
+                )
+            hits_by_page.append(_deduplicate_hits(page_hits))
+
+        count = sum(map(len, hits_by_page))
+        if count == 0:
+            log_lines.append("精确替换后全页 OCR 残留：0")
+            progress(total, total, "全页残留检查完成")
+            return 0, True
+
+        all_exact = True
+        for index, (page, hits) in enumerate(zip(document, hits_by_page)):
+            if not hits:
+                continue
+            _check_cancel(cancel_event)
+            styles = [_detect_style(document, page, hit) for hit in hits]
+            for hit in hits:
+                clear_rect = pymupdf.Rect(hit.clear_rect)
+                clear_rect.x0 -= 0.6
+                clear_rect.y0 -= 0.6
+                clear_rect.x1 += 0.6
+                clear_rect.y1 += 0.6
+                page.add_redact_annot(clear_rect, fill=(1, 1, 1), cross_out=False)
+            page.apply_redactions(images=2, graphics=0, text=0)
+            for hit, style in zip(hits, styles):
+                used_size, strategy, exact = _insert_replacement(document, page, hit, style)
+                all_exact = all_exact and exact
+                log_lines.append(
+                    f"第 {index + 1} 页 {hit.kind}：{hit.target}，字体={strategy}，字号={used_size:.2f}"
+                )
+                if used_size + 0.05 < style.font_size:
+                    warnings.append(
+                        f"第 {index + 1} 页 OCR 残留因空间不足，字号由 "
+                        f"{style.font_size:.2f} 调整为 {used_size:.2f}"
+                    )
+            page.clean_contents()
+
+        temp_path = output_path.with_name(output_path.stem + ".ocr-tmp.pdf")
+        document.save(temp_path, garbage=4, deflate=True)
+        document.close()
+        os.replace(temp_path, output_path)
+        log_lines.append(f"精确替换后全页 OCR 残留：{count}")
+        progress(total, total, "全页残留检查完成")
+        return count, all_exact
+    finally:
+        if not document.is_closed:
+            document.close()
+
+
+@dataclass
+class _TextStyle:
+    font_size: float
+    color: tuple[float, float, float]
+    font_name: str = ""
+
+
+def _detect_style(document: pymupdf.Document, page: pymupdf.Page, hit: _Hit) -> _TextStyle:
+    del document
+    candidates = []
+    data = page.get_text("dict")
+    for block in data.get("blocks", []):
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                span_rect = pymupdf.Rect(span["bbox"])
+                if _rect_overlap_ratio(span_rect, hit.clear_rect) <= 0:
+                    continue
+                candidates.append(span)
+    if candidates:
+        span = max(candidates, key=lambda item: len(item.get("text", "")))
+        color_value = int(span.get("color", 0))
+        color = (
+            ((color_value >> 16) & 255) / 255,
+            ((color_value >> 8) & 255) / 255,
+            (color_value & 255) / 255,
+        )
+        return _TextStyle(
+            max(4.0, float(span.get("size", 8.0))),
+            color,
+            str(span.get("font", "")),
+        )
+    return _TextStyle(max(4.0, hit.display_height * 0.9), (0, 0, 0))
+
+
+def _insert_replacement(
+    document: pymupdf.Document,
+    page: pymupdf.Page,
+    hit: _Hit,
+    style: _TextStyle,
+) -> tuple[float, str, bool]:
+    has_cjk = any(ord(char) > 255 for char in hit.target)
+    fontname = "china-s" if has_cjk else "helv"
+    strategy = "PyMuPDF 内置中文字体" if has_cjk else "PyMuPDF Helvetica 回退字体"
+    exact_font = False
+    measure_font = pymupdf.Font("china-s" if has_cjk else "helv")
+    embedded = _embedded_font(document, page, style.font_name, hit.target)
+    if embedded is not None:
+        xref, font_buffer, base_name = embedded
+        fontname = f"FRepl{xref}"
+        page.insert_font(fontname=fontname, fontbuffer=font_buffer)
+        measure_font = pymupdf.Font(fontbuffer=font_buffer)
+        strategy = f"原嵌入字体 {base_name}"
+        exact_font = True
+    elif style.font_name:
+        base14 = _base14_font(style.font_name)
+        if base14 is not None and not has_cjk:
+            fontname = base14
+            measure_font = pymupdf.Font(base14)
+            strategy = f"原标准字体 {style.font_name}"
+            exact_font = True
+    rect = pymupdf.Rect(hit.placement_rect)
+    rotation = page.rotation if page.rotation in (0, 90, 180, 270) else 0
+    text_width = measure_font.text_length(hit.target, fontsize=style.font_size) * 1.03
+    if rotation in (0, 180):
+        rect = _centered_rect(rect, max(rect.width, text_width), max(rect.height, style.font_size * 1.8))
+    else:
+        rect = _centered_rect(rect, max(rect.width, style.font_size * 1.8), max(rect.height, text_width))
+    rect = rect & page.mediabox
+    inset = min(1.0, rect.width * 0.02, rect.height * 0.02)
+    rect.x0 += inset
+    rect.y0 += inset
+    rect.x1 -= inset
+    rect.y1 -= inset
+    font_size = style.font_size
+    while font_size >= 4.0:
+        result = page.insert_textbox(
+            rect,
+            hit.target,
+            fontname=fontname,
+            fontsize=font_size,
+            color=style.color,
+            align=pymupdf.TEXT_ALIGN_CENTER,
+            rotate=rotation,
+            overlay=True,
+        )
+        if result >= 0:
+            return font_size, strategy, exact_font and abs(font_size - style.font_size) < 0.05
+        font_size -= 0.25
+    raise RuntimeError(f"Replacement text does not fit on page {page.number + 1}")
+
+
+def _centered_rect(rect: pymupdf.Rect, width: float, height: float) -> pymupdf.Rect:
+    center = (rect.tl + rect.br) / 2
+    return pymupdf.Rect(
+        center.x - width / 2,
+        center.y - height / 2,
+        center.x + width / 2,
+        center.y + height / 2,
+    )
+
+
+def _font_key(name: str) -> str:
+    name = name.split("+", 1)[-1]
+    return "".join(char.lower() for char in name if char.isalnum())
+
+
+def _embedded_font(
+    document: pymupdf.Document,
+    page: pymupdf.Page,
+    style_name: str,
+    target: str,
+) -> tuple[int, bytes, str] | None:
+    if not style_name:
+        return None
+    wanted = _font_key(style_name)
+    for info in page.get_fonts(full=True):
+        xref, _, font_type, base_name, resource_name = info[:5]
+        if wanted not in {_font_key(str(base_name)), _font_key(str(resource_name))}:
+            continue
+        extracted = document.extract_font(xref)
+        font_buffer = extracted[3]
+        if not font_buffer or str(font_type) == "Type3":
+            continue
+        try:
+            font = pymupdf.Font(fontbuffer=font_buffer)
+            if not all(font.has_glyph(ord(char)) for char in target):
+                continue
+        except Exception:
+            continue
+        return int(xref), font_buffer, str(base_name)
+    return None
+
+
+def _base14_font(style_name: str) -> str | None:
+    key = _font_key(style_name)
+    if "courier" in key:
+        return "cour"
+    if "helvetica" in key or "arial" in key:
+        return "helv"
+    if "times" in key:
+        return "tiro"
+    return None
+
+
+def _write_log(
+    log_path: Path,
+    source_path: Path,
+    selection: NormalizedRect,
+    recognitions: list[PageRecognition],
+    options: ProcessOptions,
+    report: ProcessReport,
+    detail_lines: list[str],
+) -> None:
+    lines = [
+        "PDF 图号识别替换日志",
+        f"软件版本：{__version__}",
+        f"处理时间：{datetime.now().astimezone().isoformat(timespec='seconds')}",
+        f"源文件：{source_path}",
+        f"输出文件：{report.output_path}",
+        f"页数：{report.page_count}",
+        "选择区域：" + ",".join(f"{value:.6f}" for value in selection.as_tuple()),
+        f"替换模板：{options.template}",
+        f"起始序号：{options.start_sequence}",
+        f"固定区域 OCR DPI：{options.fixed_dpi}",
+        f"全页搜索：{'是' if options.global_search else '否'}",
+        f"全页 OCR DPI：{options.global_dpi}",
+        "",
+        "[固定位置识别]",
+    ]
+    lines.extend(
+        f"第 {item.page_number} 页 | {item.source} | 置信度 {item.confidence:.2%}"
+        for item in recognitions
+    )
+    lines.extend(["", "[替换对应关系]"])
+    lines.extend(
+        f"{entry.source} -> {entry.target} | 页码 {','.join(map(str, entry.pages))}"
+        for entry in report.mappings
+    )
+    lines.extend(
+        [
+            "",
+            "[执行结果]",
+            f"固定位置替换：{report.fixed_replacements}",
+            f"全局补充替换：{report.global_replacements}",
+            f"精确保留嵌入字体：{'是' if report.exact_font_preserved else '否'}",
+        ]
+    )
+    lines.extend(detail_lines)
+    lines.extend(["", "[警告]"])
+    lines.extend(report.warnings or ["无"])
+    log_path.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")

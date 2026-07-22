@@ -1,1 +1,8 @@
 *.[pP][dD][fF]
+*.log
+.venv/
+__pycache__/
+.pytest_cache/
+build/
+dist/
+*.spec.bak
