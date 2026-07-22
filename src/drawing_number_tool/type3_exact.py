@@ -297,7 +297,7 @@ def replace_exact_type3(
         instructions = instruction_lists[stream_key]
         for block in sorted(blocks, key=lambda item: item.start, reverse=True):
             font_key = tuple(block.font.objgen)
-            if font_key not in prepared_fonts:
+            if block.target and font_key not in prepared_fonts:
                 _add_replacement_glyphs(block.font, canonical_glyphs)
                 prepared_fonts.add(font_key)
             old_advance = sum(

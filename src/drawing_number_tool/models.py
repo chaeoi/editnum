@@ -35,7 +35,6 @@ class OcrSpan:
 class PageRecognition:
     page_number: int
     source: str
-    confidence: float
     text_rect: NormalizedRect
     raw_text: str = ""
 
@@ -49,27 +48,36 @@ class MappingEntry:
 
 @dataclass
 class ProcessOptions:
-    template: str = "00QK0188RJB-LJ-{seq:03d}-0-260715"
-    start_sequence: int = 1
+    fixed_prefix: str = "00QK0188RJB-LJ-"
+    fixed_suffix: str = "-0-260715"
+    start_sequence: int | None = 1
+    sequence_digits: int = 3
     fixed_dpi: int = 300
     global_dpi: int = 180
     global_search: bool = True
-    minimum_confidence: float = 0.75
+    replacement_font_path: str = ""
+    replacement_font_name: str = ""
 
     def validate(self) -> None:
-        if self.start_sequence < 0:
-            raise ValueError("The starting sequence cannot be negative")
+        if self.start_sequence is not None and self.start_sequence < 0:
+            raise ValueError("起始序号不能为负数")
+        if not 1 <= self.sequence_digits <= 12:
+            raise ValueError("递增序号位数必须在 1 到 12 之间")
         if not 144 <= self.fixed_dpi <= 600:
-            raise ValueError("Fixed-region OCR DPI must be between 144 and 600")
+            raise ValueError("区域 DPI 必须在 144 到 600 之间")
         if not 96 <= self.global_dpi <= 300:
-            raise ValueError("Full-page OCR DPI must be between 96 and 300")
-        try:
-            first = self.template.format(seq=self.start_sequence)
-            second = self.template.format(seq=self.start_sequence + 1)
-        except (KeyError, ValueError, IndexError) as exc:
-            raise ValueError("Template must contain a valid {seq} field") from exc
-        if first == second:
-            raise ValueError("Template must contain a {seq} field that changes the result")
+            raise ValueError("全页 DPI 必须在 96 到 300 之间")
+    def number_for(self, sequence: int) -> str:
+        self.validate()
+        increment = ""
+        if self.start_sequence is not None:
+            increment = f"{sequence:0{self.sequence_digits}d}"
+        return f"{self.fixed_prefix}{increment}{self.fixed_suffix}"
+
+    @property
+    def rule_text(self) -> str:
+        increment = f"{{递增:{self.sequence_digits}位}}" if self.start_sequence is not None else ""
+        return f"{self.fixed_prefix}{increment}{self.fixed_suffix}"
 
 
 @dataclass
@@ -121,7 +129,8 @@ def build_mapping(
     entries: list[MappingEntry] = []
     lookup: dict[str, str] = {}
     for offset, (key, item) in enumerate(grouped.items()):
-        target = options.template.format(seq=options.start_sequence + offset)
+        sequence = (options.start_sequence or 0) + offset
+        target = options.number_for(sequence)
         entry = MappingEntry(
             source=str(item["source"]),
             target=target,

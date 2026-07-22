@@ -73,6 +73,23 @@ def _line_groups(spans: Iterable[OcrSpan]) -> list[list[OcrSpan]]:
     return rows
 
 
+def _line_segments(spans: Iterable[OcrSpan]) -> list[list[OcrSpan]]:
+    segments: list[list[OcrSpan]] = []
+    for row in _line_groups(spans):
+        segment: list[OcrSpan] = []
+        for span in row:
+            if segment:
+                previous = segment[-1]
+                height = max(previous.box[3] - previous.box[1], span.box[3] - span.box[1], 1.0)
+                if span.box[0] - previous.box[2] > height * 3.0:
+                    segments.append(segment)
+                    segment = []
+            segment.append(span)
+        if segment:
+            segments.append(segment)
+    return segments
+
+
 def primary_text(spans: list[OcrSpan]) -> tuple[str, float, tuple[float, float, float, float]]:
     candidates = []
     for row in _line_groups(spans):
@@ -95,10 +112,19 @@ class OcrMatch:
     key: str
     confidence: float
     box: tuple[float, float, float, float]
+    line_text: str
+    line_box: tuple[float, float, float, float]
 
 
 def find_mapping_matches(spans: list[OcrSpan], known_keys: set[str]) -> list[OcrMatch]:
     matches: list[OcrMatch] = []
+    rows = _line_segments(spans)
+    context_by_span: dict[int, tuple[str, tuple[float, float, float, float]]] = {}
+    for row in rows:
+        line_text = "".join(item.text for item in row)
+        line_box = _union_boxes(item.box for item in row)
+        for span in row:
+            context_by_span[id(span)] = line_text, line_box
     for span in spans:
         normalized = matching_key(span.text)
         for key in known_keys:
@@ -107,6 +133,7 @@ def find_mapping_matches(spans: list[OcrSpan], known_keys: set[str]) -> list[Ocr
                 continue
             x0, y0, x1, y1 = span.box
             width_per_char = (x1 - x0) / max(1, len(normalized))
+            line_text, line_box = context_by_span[id(span)]
             matches.append(
                 OcrMatch(
                     key=key,
@@ -117,10 +144,14 @@ def find_mapping_matches(spans: list[OcrSpan], known_keys: set[str]) -> list[Ocr
                         x0 + (offset + len(key)) * width_per_char,
                         y1,
                     ),
+                    line_text=line_text,
+                    line_box=line_box,
                 )
             )
-    for row in _line_groups(spans):
+    for row in rows:
         normalized = [matching_key(span.text) for span in row]
+        line_text = "".join(item.text for item in row)
+        line_box = _union_boxes(item.box for item in row)
         for start in range(len(row)):
             combined = ""
             weighted_score = 0.0
@@ -139,6 +170,8 @@ def find_mapping_matches(spans: list[OcrSpan], known_keys: set[str]) -> list[Ocr
                             key=combined,
                             confidence=weighted_score / weighted_chars,
                             box=_union_boxes(item.box for item in row[start : end + 1]),
+                            line_text=line_text,
+                            line_box=line_box,
                         )
                     )
                 if not any(key.startswith(combined) for key in known_keys):

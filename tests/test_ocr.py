@@ -24,6 +24,7 @@ def test_global_match_can_span_adjacent_ocr_boxes() -> None:
     assert len(matches) == 1
     assert matches[0].key == "07-0326DU01A"
     assert matches[0].box == (10, 10, 100, 20)
+    assert matches[0].line_text == "07-0326DU01A"
 
 
 def test_global_match_can_be_inside_a_longer_ocr_box() -> None:
@@ -31,3 +32,4 @@ def test_global_match_can_be_inside_a_longer_ocr_box() -> None:
     matches = find_mapping_matches(spans, {"07-0326DU01A"})
     assert len(matches) == 1
     assert matches[0].key == "07-0326DU01A"
+    assert matches[0].line_text == "REF:07-0326DU01A/REV"

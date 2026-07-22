@@ -1,0 +1,15 @@
+THIRD-PARTY NOTICES
+
+The Windows portable package includes these principal third-party components:
+
+- PyMuPDF: GNU Affero General Public License v3 or a commercial license.
+- pikepdf: Mozilla Public License 2.0; bundled qpdf components use Apache License 2.0.
+- RapidOCR: Apache License 2.0. OCR model copyright belongs to Baidu as stated by RapidOCR.
+- ONNX Runtime: MIT License.
+- Pillow: HPND License.
+- OpenCV Python package: Apache License 2.0.
+- PyInstaller: GPL 2.0 with its exception for distributing bundled applications.
+
+The licenses directory in the portable package contains the applicable principal
+license texts. Installed package metadata and the upstream projects provide the
+complete notices for all transitive components.

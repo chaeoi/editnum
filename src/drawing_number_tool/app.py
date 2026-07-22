@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import threading
 import tkinter as tk
@@ -14,12 +15,54 @@ from .processor import process_document, recognize_fixed_regions, render_page
 from .version import __version__
 
 
+AUTO_FONT = "自动匹配原字体"
+
+
+def _windows_font_choices() -> dict[str, str]:
+    if os.name != "nt":
+        return {}
+    try:
+        import winreg
+    except ImportError:
+        return {}
+
+    font_dir = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+    choices: dict[str, str] = {}
+    key_names = (
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"),
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"),
+    )
+    for hive, key_name in key_names:
+        try:
+            key = winreg.OpenKey(hive, key_name)
+        except OSError:
+            continue
+        with key:
+            index = 0
+            while True:
+                try:
+                    label, value, _ = winreg.EnumValue(key, index)
+                except OSError:
+                    break
+                index += 1
+                if not isinstance(value, str):
+                    continue
+                path = Path(os.path.expandvars(value))
+                if not path.is_absolute():
+                    path = font_dir / path
+                if path.suffix.lower() not in {".ttf", ".ttc", ".otf", ".otc"} or not path.exists():
+                    continue
+                clean_label = label.rsplit(" (", 1)[0].strip()
+                choices.setdefault(clean_label, str(path))
+    return dict(sorted(choices.items(), key=lambda item: item[0].casefold()))
+
+
 class DrawingNumberApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title(f"PDF 图号替换 {__version__}")
         self.root.geometry("1440x900")
-        self.root.minsize(1080, 680)
+        self.root.minsize(1180, 720)
 
         self.source_path: Path | None = None
         self.document: pymupdf.Document | None = None
@@ -42,6 +85,7 @@ class DrawingNumberApp:
         style = ttk.Style()
         style.configure("Toolbar.TFrame", padding=(8, 6))
         style.configure("Panel.TFrame", padding=10)
+        style.configure("Treeview", rowheight=26)
 
         toolbar = ttk.Frame(self.root, style="Toolbar.TFrame")
         toolbar.pack(fill=tk.X)
@@ -61,11 +105,18 @@ class DrawingNumberApp:
         self.file_label = ttk.Label(toolbar, text="未打开文件", anchor=tk.W)
         self.file_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(12, 0))
 
-        main = ttk.Panedwindow(self.root, orient=tk.HORIZONTAL)
+        main = tk.PanedWindow(
+            self.root,
+            orient=tk.HORIZONTAL,
+            borderwidth=0,
+            sashwidth=5,
+            sashrelief=tk.FLAT,
+            background=style.lookup("TFrame", "background"),
+        )
         main.pack(fill=tk.BOTH, expand=True)
 
         viewer = ttk.Frame(main)
-        main.add(viewer, weight=4)
+        main.add(viewer, minsize=540, stretch="always")
         self.canvas = tk.Canvas(viewer, bg="#5a5a5a", highlightthickness=0, cursor="crosshair")
         x_scroll = ttk.Scrollbar(viewer, orient=tk.HORIZONTAL, command=self.canvas.xview)
         y_scroll = ttk.Scrollbar(viewer, orient=tk.VERTICAL, command=self.canvas.yview)
@@ -80,37 +131,72 @@ class DrawingNumberApp:
         self.canvas.bind("<ButtonRelease-1>", self._selection_end)
         self.canvas.bind("<MouseWheel>", self._mousewheel)
 
-        panel = ttk.Frame(main, style="Panel.TFrame", width=440)
-        panel.pack_propagate(False)
-        main.add(panel, weight=1)
+        panel = ttk.Frame(main, style="Panel.TFrame", width=520)
+        main.add(panel, minsize=520, width=520, stretch="never")
 
         settings = ttk.LabelFrame(panel, text="替换设置", padding=8)
         settings.pack(fill=tk.X)
-        ttk.Label(settings, text="新图号模板").grid(row=0, column=0, sticky=tk.W)
-        self.template_var = tk.StringVar(value="00QK0188RJB-LJ-{seq:03d}-0-260715")
-        ttk.Entry(settings, textvariable=self.template_var).grid(
-            row=1, column=0, columnspan=4, sticky=tk.EW, pady=(2, 8)
+        ttk.Label(settings, text="固定前段（可空）").grid(row=0, column=0, sticky=tk.W)
+        ttk.Label(settings, text="递增起始（可空）").grid(
+            row=0, column=1, sticky=tk.W, padx=(8, 0)
         )
-        ttk.Label(settings, text="起始序号").grid(row=2, column=0, sticky=tk.W)
-        self.start_var = tk.IntVar(value=1)
+        ttk.Label(settings, text="位数").grid(row=0, column=2, sticky=tk.W, padx=(8, 0))
+        ttk.Label(settings, text="固定后段（可空）").grid(
+            row=0, column=3, sticky=tk.W, padx=(8, 0)
+        )
+        self.prefix_var = tk.StringVar(value="00QK0188RJB-LJ-")
+        ttk.Entry(settings, textvariable=self.prefix_var, width=20).grid(
+            row=1, column=0, sticky=tk.EW, pady=(2, 6)
+        )
+        self.start_var = tk.StringVar(value="1")
         ttk.Spinbox(settings, from_=0, to=999999, textvariable=self.start_var, width=8).grid(
-            row=3, column=0, sticky=tk.W, pady=(2, 8)
+            row=1, column=1, sticky=tk.EW, padx=(8, 0), pady=(2, 6)
         )
-        ttk.Label(settings, text="区域 DPI").grid(row=2, column=1, sticky=tk.W, padx=(10, 0))
+        self.sequence_digits_var = tk.IntVar(value=3)
+        ttk.Combobox(
+            settings,
+            textvariable=self.sequence_digits_var,
+            values=(1, 2, 3, 4, 5, 6),
+            width=4,
+            state="readonly",
+        ).grid(row=1, column=2, sticky=tk.EW, padx=(8, 0), pady=(2, 6))
+        self.suffix_var = tk.StringVar(value="-0-260715")
+        ttk.Entry(settings, textvariable=self.suffix_var, width=14).grid(
+            row=1, column=3, sticky=tk.EW, padx=(8, 0), pady=(2, 6)
+        )
+        self.rule_preview_var = tk.StringVar()
+        ttk.Label(settings, textvariable=self.rule_preview_var, anchor=tk.W).grid(
+            row=2, column=0, columnspan=4, sticky=tk.EW, pady=(0, 9)
+        )
+
+        ttk.Label(settings, text="区域 DPI").grid(row=3, column=0, sticky=tk.W)
         self.fixed_dpi_var = tk.IntVar(value=300)
         ttk.Spinbox(settings, from_=144, to=600, textvariable=self.fixed_dpi_var, width=8).grid(
-            row=3, column=1, sticky=tk.W, padx=(10, 0), pady=(2, 8)
+            row=4, column=0, sticky=tk.W, pady=(2, 7)
         )
-        ttk.Label(settings, text="全页 DPI").grid(row=2, column=2, sticky=tk.W, padx=(10, 0))
+        ttk.Label(settings, text="全页 DPI").grid(row=3, column=1, sticky=tk.W, padx=(8, 0))
         self.global_dpi_var = tk.IntVar(value=180)
         ttk.Spinbox(settings, from_=96, to=300, textvariable=self.global_dpi_var, width=8).grid(
-            row=3, column=2, sticky=tk.W, padx=(10, 0), pady=(2, 8)
+            row=4, column=1, sticky=tk.W, padx=(8, 0), pady=(2, 7)
         )
         self.global_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(settings, text="全页补充搜索替换", variable=self.global_var).grid(
-            row=4, column=0, columnspan=3, sticky=tk.W
+            row=4, column=2, columnspan=2, sticky=tk.W, padx=(8, 0), pady=(2, 7)
         )
-        settings.columnconfigure(0, weight=1)
+        ttk.Label(settings, text="替换字体").grid(row=5, column=0, sticky=tk.W)
+        self.font_paths = {AUTO_FONT: "", **_windows_font_choices()}
+        self.font_var = tk.StringVar(value=AUTO_FONT)
+        self.font_combo = ttk.Combobox(
+            settings,
+            textvariable=self.font_var,
+            values=tuple(self.font_paths),
+            state="readonly",
+        )
+        self.font_combo.grid(row=6, column=0, columnspan=4, sticky=tk.EW, pady=(2, 2))
+        settings.columnconfigure(0, weight=3)
+        settings.columnconfigure(1, weight=1)
+        settings.columnconfigure(2, weight=1)
+        settings.columnconfigure(3, weight=2)
 
         action_row = ttk.Frame(panel)
         action_row.pack(fill=tk.X, pady=(10, 8))
@@ -121,21 +207,32 @@ class DrawingNumberApp:
 
         result_frame = ttk.LabelFrame(panel, text="识别与映射", padding=6)
         result_frame.pack(fill=tk.BOTH, expand=True)
-        columns = ("page", "source", "target", "confidence")
+        columns = ("page", "source", "target")
         self.tree = ttk.Treeview(result_frame, columns=columns, show="headings", selectmode="browse")
         self.tree.heading("page", text="页")
         self.tree.heading("source", text="原图号")
         self.tree.heading("target", text="新图号")
-        self.tree.heading("confidence", text="置信度")
-        self.tree.column("page", width=42, anchor=tk.CENTER, stretch=False)
-        self.tree.column("source", width=125, anchor=tk.W)
-        self.tree.column("target", width=200, anchor=tk.W)
-        self.tree.column("confidence", width=64, anchor=tk.E, stretch=False)
+        self.tree.column("page", width=48, anchor=tk.CENTER, stretch=False)
+        self.tree.column("source", width=165, anchor=tk.W)
+        self.tree.column("target", width=250, anchor=tk.W)
         tree_scroll = ttk.Scrollbar(result_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=tree_scroll.set)
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        tree_x_scroll = ttk.Scrollbar(result_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
+        self.tree.configure(yscrollcommand=tree_scroll.set, xscrollcommand=tree_x_scroll.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        tree_scroll.grid(row=0, column=1, sticky="ns")
+        tree_x_scroll.grid(row=1, column=0, sticky="ew")
+        result_frame.rowconfigure(0, weight=1)
+        result_frame.columnconfigure(0, weight=1)
         self.tree.bind("<Double-1>", self._edit_recognition)
+
+        for variable in (
+            self.prefix_var,
+            self.start_var,
+            self.sequence_digits_var,
+            self.suffix_var,
+        ):
+            variable.trace_add("write", self._numbering_rule_changed)
+        self._numbering_rule_changed()
 
         status = ttk.Frame(self.root, padding=(8, 4))
         status.pack(fill=tk.X)
@@ -147,15 +244,39 @@ class DrawingNumberApp:
         self.cancel_button.pack(side=tk.LEFT)
 
     def _options(self) -> ProcessOptions:
+        start_text = self.start_var.get().strip()
+        start_sequence = int(start_text) if start_text else None
+        font_name = self.font_var.get()
         options = ProcessOptions(
-            template=self.template_var.get().strip(),
-            start_sequence=int(self.start_var.get()),
+            fixed_prefix=self.prefix_var.get(),
+            fixed_suffix=self.suffix_var.get(),
+            start_sequence=start_sequence,
+            sequence_digits=int(self.sequence_digits_var.get()),
             fixed_dpi=int(self.fixed_dpi_var.get()),
             global_dpi=int(self.global_dpi_var.get()),
             global_search=bool(self.global_var.get()),
+            replacement_font_path=self.font_paths.get(font_name, ""),
+            replacement_font_name="" if font_name == AUTO_FONT else font_name,
         )
         options.validate()
         return options
+
+    def _numbering_rule_changed(self, *_args) -> None:
+        try:
+            options = self._options()
+            first_sequence = options.start_sequence or 0
+            first = options.number_for(first_sequence)
+            second = options.number_for(first_sequence + 1)
+        except (ValueError, tk.TclError):
+            self.rule_preview_var.set("预览：规则尚未填写完整")
+            return
+        if not first and not second:
+            preview = "（空，将清除图号）"
+        else:
+            preview = first if first == second else f"{first}  →  {second}"
+        self.rule_preview_var.set(f"预览：{preview}")
+        if hasattr(self, "tree") and self.recognitions:
+            self._refresh_table()
 
     def _open_pdf(self) -> None:
         filename = filedialog.askopenfilename(filetypes=[("PDF 文件", "*.pdf"), ("所有文件", "*.*")])
@@ -305,8 +426,7 @@ class DrawingNumberApp:
     def _recognition_done(self, recognitions: list[PageRecognition]) -> None:
         self.recognitions = recognitions
         self._refresh_table()
-        low = sum(item.confidence < 0.75 for item in recognitions)
-        self.status_var.set(f"识别完成：{len(recognitions)} 页，低置信度 {low} 页")
+        self.status_var.set(f"识别完成：共 {len(recognitions)} 页")
 
     def _refresh_table(self) -> None:
         self.tree.delete(*self.tree.get_children())
@@ -325,11 +445,8 @@ class DrawingNumberApp:
                     item.page_number,
                     item.source,
                     mapping.get(matching_key(item.source), ""),
-                    f"{item.confidence:.1%}",
                 ),
-                tags=("low",) if item.confidence < 0.75 else (),
             )
-        self.tree.tag_configure("low", foreground="#b42318")
 
     def _edit_recognition(self, event) -> None:
         row = self.tree.identify_row(event.y)
@@ -346,7 +463,6 @@ class DrawingNumberApp:
         if value is None or not value.strip():
             return
         item.source = value.strip()
-        item.confidence = 1.0
         self._refresh_table()
 
     def _process(self) -> None:
@@ -357,13 +473,6 @@ class DrawingNumberApp:
             options = self._options()
         except Exception as exc:
             messagebox.showerror("设置错误", str(exc), parent=self.root)
-            return
-        low_pages = [str(item.page_number) for item in self.recognitions if item.confidence < 0.75]
-        if low_pages and not messagebox.askyesno(
-            "低置信度确认",
-            "以下页面识别置信度较低：" + ", ".join(low_pages) + "\n仍然继续吗？",
-            parent=self.root,
-        ):
             return
         default_name = self.source_path.stem + "_图号已修改.pdf"
         filename = filedialog.asksaveasfilename(
@@ -390,7 +499,10 @@ class DrawingNumberApp:
         )
 
     def _process_done(self, report) -> None:
-        font_text = "嵌入字体精确保留" if report.exact_font_preserved else "使用字体回退，详见日志"
+        if self.font_var.get() != AUTO_FONT:
+            font_text = f"替换字体：{self.font_var.get()}"
+        else:
+            font_text = "嵌入字体精确保留" if report.exact_font_preserved else "自动字体匹配，详见日志"
         self.status_var.set("替换完成")
         messagebox.showinfo(
             "处理完成",

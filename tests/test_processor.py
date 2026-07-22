@@ -3,7 +3,7 @@ from pathlib import Path
 import pymupdf
 
 from drawing_number_tool.models import NormalizedRect, PageRecognition, ProcessOptions
-from drawing_number_tool.processor import process_document
+from drawing_number_tool.processor import _replace_mapped_text, process_document
 
 
 class EmptyOcr:
@@ -25,7 +25,6 @@ def test_visual_fallback_replaces_fixed_and_global_text_and_writes_log(tmp_path:
     recognition = PageRecognition(
         page_number=1,
         source="OLD-01",
-        confidence=0.99,
         text_rect=NormalizedRect(0.56, 0.80, 0.78, 0.90),
     )
     report = process_document(
@@ -33,7 +32,9 @@ def test_visual_fallback_replaces_fixed_and_global_text_and_writes_log(tmp_path:
         output,
         selection,
         [recognition],
-        ProcessOptions(template="NEW-{seq:03d}", global_search=True),
+        ProcessOptions(
+            fixed_prefix="NEW-", fixed_suffix="", sequence_digits=3, global_search=True
+        ),
         ocr=EmptyOcr(),
     )
 
@@ -49,3 +50,13 @@ def test_visual_fallback_replaces_fixed_and_global_text_and_writes_log(tmp_path:
     result.close()
     assert "OLD-01" not in text
     assert text.count("NEW-001") == 2
+
+
+def test_global_text_replacement_reflows_the_complete_line() -> None:
+    assert _replace_mapped_text(
+        "REF: OLD-01 / REV A", {"OLD-01": "NEW-001"}
+    ) == "REF: NEW-001 / REV A"
+    assert _replace_mapped_text(
+        "OLD - 01 与 OLD-01", {"OLD-01": "NEW-001"}
+    ) == "NEW-001 与 NEW-001"
+    assert _replace_mapped_text("图号 OLD-01", {"OLD-01": ""}) == "图号 "

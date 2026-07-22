@@ -62,7 +62,7 @@ def recognize_fixed_regions(
             crop_box = _pixel_box(selection, image.width, image.height)
             spans = engine.recognize(image.crop(crop_box))
             try:
-                text, confidence, local_box = primary_text(spans)
+                text, _score, local_box = primary_text(spans)
             except OcrError as exc:
                 raise OcrError(f"第 {index + 1} 页选定区域未识别到文本") from exc
             global_box = (
@@ -78,12 +78,11 @@ def recognize_fixed_regions(
                 min(1.0, global_box[3] / image.height),
             )
             recognitions.append(
-                PageRecognition(
-                    page_number=index + 1,
-                    source=text,
-                    confidence=confidence,
-                    text_rect=text_rect,
-                    raw_text=text,
+                    PageRecognition(
+                        page_number=index + 1,
+                        source=text,
+                        text_rect=text_rect,
+                        raw_text=text,
                 )
             )
         progress(total, total, "固定区域识别完成")
@@ -108,8 +107,8 @@ class _Hit:
     clear_rect: pymupdf.Rect
     placement_rect: pymupdf.Rect
     kind: str
-    confidence: float
     display_height: float
+    reflow_line: bool = False
 
 
 def process_document(
@@ -130,26 +129,25 @@ def process_document(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     log_path = output_path.with_suffix(".log")
     entries, mapping_by_key = build_mapping(recognitions, options)
-    warnings = [
-        f"第 {item.page_number} 页 OCR 置信度较低：{item.confidence:.1%}"
-        for item in recognitions
-        if item.confidence < options.minimum_confidence
-    ]
+    warnings: list[str] = []
 
     _check_cancel(cancel_event)
     exact_result = None
     exact_failure = ""
     progress(0, 1, "正在检查嵌入字体精确替换")
-    try:
-        exact_result = replace_exact_type3(
-            source_path,
-            output_path,
-            recognitions,
-            mapping_by_key,
-            global_search=options.global_search,
-        )
-    except ExactType3NotSupported as exc:
-        exact_failure = str(exc)
+    if options.replacement_font_path:
+        exact_failure = "用户已选择 Windows 字体，改用统一视觉排版"
+    else:
+        try:
+            exact_result = replace_exact_type3(
+                source_path,
+                output_path,
+                recognitions,
+                mapping_by_key,
+                global_search=options.global_search,
+            )
+        except ExactType3NotSupported as exc:
+            exact_failure = str(exc)
 
     if exact_result is not None:
         supplemental_count = 0
@@ -159,7 +157,7 @@ def process_document(
             supplemental_count, supplemental_exact = _replace_remaining_ocr_hits(
                 output_path,
                 mapping_by_key,
-                options.global_dpi,
+                options,
                 ocr or RapidOcrEngine(),
                 progress,
                 cancel_event,
@@ -278,23 +276,22 @@ def _replace_visually(
                     clear_rect=_to_unrotated(page, fixed_clear_display),
                     placement_rect=_to_unrotated(page, fixed_place_display),
                     kind="固定区域",
-                    confidence=recognition.confidence,
                     display_height=fixed_clear_display.height,
                 )
             ]
             if options.global_search:
                 progress(index, total_steps, f"正在全页搜索第 {index + 1}/{len(document)} 页")
-                hits.extend(
-                    _find_global_hits(
-                        page,
-                        mapping_by_key,
-                        fixed_clear_display,
-                        options.global_dpi,
-                        ocr,
-                    )
+                global_hits = _find_global_hits(
+                    page,
+                    mapping_by_key,
+                    fixed_clear_display,
+                    options.global_dpi,
+                    ocr,
                 )
-                global_count += len(hits) - 1
-            hits_by_page.append(_deduplicate_hits(hits))
+                hits.extend(global_hits)
+            deduplicated = _deduplicate_hits(hits)
+            global_count += sum(hit.kind != "固定区域" for hit in deduplicated)
+            hits_by_page.append(deduplicated)
 
         for index, (page, hits) in enumerate(zip(document, hits_by_page)):
             _check_cancel(cancel_event)
@@ -313,7 +310,9 @@ def _replace_visually(
                 page.add_redact_annot(clear_rect, fill=(1, 1, 1), cross_out=False)
             page.apply_redactions(images=2, graphics=0, text=0)
             for hit, style in zip(hits, styles):
-                used_size, strategy, font_exact = _insert_replacement(document, page, hit, style)
+                used_size, strategy, font_exact = _insert_replacement(
+                    document, page, hit, style, options
+                )
                 all_fonts_exact = all_fonts_exact and font_exact
                 log_lines.append(
                     f"第 {index + 1} 页 {hit.kind}：{hit.target}，字体={strategy}，字号={used_size:.2f}"
@@ -340,10 +339,28 @@ def _find_global_hits(
     ocr: RapidOcrEngine,
 ) -> list[_Hit]:
     hits: list[_Hit] = []
+    text_lines = _page_text_lines(page)
     for source_key, target in mapping_by_key.items():
         for source_rect in page.search_for(source_key):
             display_rect = source_rect * page.rotation_matrix
             if _rect_overlap_ratio(display_rect, fixed_display) > 0.5:
+                continue
+            line = _containing_text_line(text_lines, source_rect, source_key)
+            if line is not None:
+                line_text, line_rect = line
+                replacement = _replace_mapped_text(line_text, mapping_by_key)
+                line_display = line_rect * page.rotation_matrix
+                hits.append(
+                    _Hit(
+                        source_key=source_key,
+                        target=replacement,
+                        clear_rect=pymupdf.Rect(line_rect),
+                        placement_rect=pymupdf.Rect(line_rect),
+                        kind="文本层整行重排",
+                        display_height=line_display.height,
+                        reflow_line=True,
+                    )
+                )
                 continue
             hits.append(
                 _Hit(
@@ -352,7 +369,6 @@ def _find_global_hits(
                     clear_rect=pymupdf.Rect(source_rect),
                     placement_rect=pymupdf.Rect(source_rect),
                     kind="文本层全局命中",
-                    confidence=1.0,
                     display_height=display_rect.height,
                 )
             )
@@ -360,27 +376,82 @@ def _find_global_hits(
     image = render_page(page, dpi)
     spans = ocr.recognize(image)
     for match in find_mapping_matches(spans, set(mapping_by_key)):
+        line_box = match.line_box
         display_rect = pymupdf.Rect(
-            match.box[0] * page.rect.width / image.width,
-            match.box[1] * page.rect.height / image.height,
-            match.box[2] * page.rect.width / image.width,
-            match.box[3] * page.rect.height / image.height,
+            line_box[0] * page.rect.width / image.width,
+            line_box[1] * page.rect.height / image.height,
+            line_box[2] * page.rect.width / image.width,
+            line_box[3] * page.rect.height / image.height,
         )
         if _rect_overlap_ratio(display_rect, fixed_display) > 0.5:
             continue
         page_rect = _to_unrotated(page, display_rect)
+        replacement = _replace_mapped_text(match.line_text, mapping_by_key)
         hits.append(
             _Hit(
                 source_key=match.key,
-                target=mapping_by_key[match.key],
+                target=replacement,
                 clear_rect=page_rect,
                 placement_rect=page_rect,
-                kind="OCR 全局命中",
-                confidence=match.confidence,
+                kind="OCR 整行重排",
                 display_height=display_rect.height,
+                reflow_line=True,
             )
         )
     return _deduplicate_hits(hits)
+
+
+def _page_text_lines(page: pymupdf.Page) -> list[tuple[str, pymupdf.Rect]]:
+    result: list[tuple[str, pymupdf.Rect]] = []
+    for block in page.get_text("dict").get("blocks", []):
+        for line in block.get("lines", []):
+            text = "".join(str(span.get("text", "")) for span in line.get("spans", []))
+            if not text:
+                continue
+            result.append((text, pymupdf.Rect(line["bbox"])))
+    return result
+
+
+def _containing_text_line(
+    lines: list[tuple[str, pymupdf.Rect]],
+    source_rect: pymupdf.Rect,
+    source_key: str,
+) -> tuple[str, pymupdf.Rect] | None:
+    candidates = [
+        line
+        for line in lines
+        if source_key in matching_key(line[0]) and _rect_overlap_ratio(line[1], source_rect) > 0
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: item[1].get_area())
+
+
+def _replace_mapped_text(text: str, mapping_by_key: dict[str, str]) -> str:
+    normalized_chars: list[str] = []
+    source_positions: list[int] = []
+    for index, char in enumerate(text):
+        normalized = matching_key(char)
+        normalized_chars.extend(normalized)
+        source_positions.extend([index] * len(normalized))
+    normalized_text = "".join(normalized_chars)
+    keys = sorted(mapping_by_key, key=len, reverse=True)
+    replacements: list[tuple[int, int, str]] = []
+    cursor = 0
+    while cursor < len(normalized_text):
+        key = next((item for item in keys if normalized_text.startswith(item, cursor)), None)
+        if key is None:
+            cursor += 1
+            continue
+        start = source_positions[cursor]
+        end = source_positions[cursor + len(key) - 1] + 1
+        replacements.append((start, end, mapping_by_key[key]))
+        cursor += len(key)
+
+    result = text
+    for start, end, replacement in reversed(replacements):
+        result = result[:start] + replacement + result[end:]
+    return result
 
 
 def _rect_overlap_ratio(a: pymupdf.Rect, b: pymupdf.Rect) -> float:
@@ -393,11 +464,20 @@ def _rect_overlap_ratio(a: pymupdf.Rect, b: pymupdf.Rect) -> float:
 
 def _deduplicate_hits(hits: list[_Hit]) -> list[_Hit]:
     result: list[_Hit] = []
-    priority = {"固定区域": 3, "文本层全局命中": 2, "OCR 全局命中": 1}
+    priority = {
+        "固定区域": 4,
+        "文本层整行重排": 3,
+        "文本层全局命中": 2,
+        "OCR 整行重排": 1,
+        "精确替换后 OCR 整行重排": 1,
+    }
     for hit in sorted(hits, key=lambda item: priority.get(item.kind, 0), reverse=True):
         if any(
-            hit.source_key == old.source_key
-            and _rect_overlap_ratio(hit.clear_rect, old.clear_rect) > 0.55
+            _rect_overlap_ratio(hit.clear_rect, old.clear_rect) > 0.55
+            and (
+                hit.source_key == old.source_key
+                or (hit.reflow_line and old.reflow_line and hit.target == old.target)
+            )
             for old in result
         ):
             continue
@@ -408,7 +488,7 @@ def _deduplicate_hits(hits: list[_Hit]) -> list[_Hit]:
 def _replace_remaining_ocr_hits(
     output_path: Path,
     mapping_by_key: dict[str, str],
-    dpi: int,
+    options: ProcessOptions,
     ocr: RapidOcrEngine,
     progress: ProgressCallback,
     cancel_event: threading.Event | None,
@@ -427,25 +507,26 @@ def _replace_remaining_ocr_hits(
         for index, page in enumerate(document):
             _check_cancel(cancel_event)
             progress(index, total, f"正在检查全页残留 {index + 1}/{total} 页")
-            image = render_page(page, dpi)
+            image = render_page(page, options.global_dpi)
             page_hits: list[_Hit] = []
             for match in find_mapping_matches(ocr.recognize(image), set(mapping_by_key)):
+                line_box = match.line_box
                 display_rect = pymupdf.Rect(
-                    match.box[0] * page.rect.width / image.width,
-                    match.box[1] * page.rect.height / image.height,
-                    match.box[2] * page.rect.width / image.width,
-                    match.box[3] * page.rect.height / image.height,
+                    line_box[0] * page.rect.width / image.width,
+                    line_box[1] * page.rect.height / image.height,
+                    line_box[2] * page.rect.width / image.width,
+                    line_box[3] * page.rect.height / image.height,
                 )
                 page_rect = _to_unrotated(page, display_rect)
                 page_hits.append(
                     _Hit(
                         source_key=match.key,
-                        target=mapping_by_key[match.key],
+                        target=_replace_mapped_text(match.line_text, mapping_by_key),
                         clear_rect=page_rect,
                         placement_rect=page_rect,
-                        kind="精确替换后 OCR 残留",
-                        confidence=match.confidence,
+                        kind="精确替换后 OCR 整行重排",
                         display_height=display_rect.height,
+                        reflow_line=True,
                     )
                 )
             hits_by_page.append(_deduplicate_hits(page_hits))
@@ -471,7 +552,9 @@ def _replace_remaining_ocr_hits(
                 page.add_redact_annot(clear_rect, fill=(1, 1, 1), cross_out=False)
             page.apply_redactions(images=2, graphics=0, text=0)
             for hit, style in zip(hits, styles):
-                used_size, strategy, exact = _insert_replacement(document, page, hit, style)
+                used_size, strategy, exact = _insert_replacement(
+                    document, page, hit, style, options
+                )
                 all_exact = all_exact and exact
                 log_lines.append(
                     f"第 {index + 1} 页 {hit.kind}：{hit.target}，字体={strategy}，字号={used_size:.2f}"
@@ -534,13 +617,34 @@ def _insert_replacement(
     page: pymupdf.Page,
     hit: _Hit,
     style: _TextStyle,
+    options: ProcessOptions,
 ) -> tuple[float, str, bool]:
+    if not hit.target:
+        return style.font_size, "清除文字", True
     has_cjk = any(ord(char) > 255 for char in hit.target)
     fontname = "china-s" if has_cjk else "helv"
     strategy = "PyMuPDF 内置中文字体" if has_cjk else "PyMuPDF Helvetica 回退字体"
     exact_font = False
     measure_font = pymupdf.Font("china-s" if has_cjk else "helv")
-    embedded = _embedded_font(document, page, style.font_name, hit.target)
+    embedded = None
+    if options.replacement_font_path:
+        font_path = Path(options.replacement_font_path)
+        if not font_path.is_file():
+            raise ValueError(f"所选 Windows 字体文件不存在：{font_path}")
+        try:
+            measure_font = pymupdf.Font(fontfile=str(font_path))
+        except Exception as exc:
+            raise ValueError(f"无法读取所选 Windows 字体：{options.replacement_font_name}") from exc
+        missing = sorted({char for char in hit.target if not measure_font.has_glyph(ord(char))})
+        if missing:
+            raise ValueError(
+                f"所选 Windows 字体 {options.replacement_font_name} 缺少字符：{''.join(missing)}"
+            )
+        fontname = "FWindows"
+        page.insert_font(fontname=fontname, fontfile=str(font_path))
+        strategy = f"Windows 字体 {options.replacement_font_name}"
+    else:
+        embedded = _embedded_font(document, page, style.font_name, hit.target)
     if embedded is not None:
         xref, font_buffer, base_name = embedded
         fontname = f"FRepl{xref}"
@@ -558,12 +662,23 @@ def _insert_replacement(
     rect = pymupdf.Rect(hit.placement_rect)
     rotation = page.rotation if page.rotation in (0, 90, 180, 270) else 0
     text_width = measure_font.text_length(hit.target, fontsize=style.font_size) * 1.03
-    if rotation in (0, 180):
-        rect = _centered_rect(rect, max(rect.width, text_width), max(rect.height, style.font_size * 1.8))
+    if hit.reflow_line:
+        rect = _line_layout_rect(
+            rect,
+            text_width,
+            style.font_size * 1.8,
+            rotation,
+        )
+    elif rotation in (0, 180):
+        rect = _centered_rect(
+            rect, max(rect.width, text_width), max(rect.height, style.font_size * 1.8)
+        )
     else:
-        rect = _centered_rect(rect, max(rect.width, style.font_size * 1.8), max(rect.height, text_width))
+        rect = _centered_rect(
+            rect, max(rect.width, style.font_size * 1.8), max(rect.height, text_width)
+        )
     rect = rect & page.mediabox
-    inset = min(1.0, rect.width * 0.02, rect.height * 0.02)
+    inset = 0.0 if hit.reflow_line else min(1.0, rect.width * 0.02, rect.height * 0.02)
     rect.x0 += inset
     rect.y0 += inset
     rect.x1 -= inset
@@ -576,7 +691,7 @@ def _insert_replacement(
             fontname=fontname,
             fontsize=font_size,
             color=style.color,
-            align=pymupdf.TEXT_ALIGN_CENTER,
+            align=pymupdf.TEXT_ALIGN_LEFT if hit.reflow_line else pymupdf.TEXT_ALIGN_CENTER,
             rotate=rotation,
             overlay=True,
         )
@@ -593,6 +708,42 @@ def _centered_rect(rect: pymupdf.Rect, width: float, height: float) -> pymupdf.R
         center.y - height / 2,
         center.x + width / 2,
         center.y + height / 2,
+    )
+
+
+def _line_layout_rect(
+    rect: pymupdf.Rect,
+    text_width: float,
+    text_height: float,
+    rotation: int,
+) -> pymupdf.Rect:
+    center = (rect.tl + rect.br) / 2
+    if rotation == 0:
+        return pymupdf.Rect(
+            rect.x0,
+            center.y - max(rect.height, text_height) / 2,
+            rect.x0 + max(rect.width, text_width),
+            center.y + max(rect.height, text_height) / 2,
+        )
+    if rotation == 180:
+        return pymupdf.Rect(
+            rect.x1 - max(rect.width, text_width),
+            center.y - max(rect.height, text_height) / 2,
+            rect.x1,
+            center.y + max(rect.height, text_height) / 2,
+        )
+    if rotation == 90:
+        return pymupdf.Rect(
+            center.x - max(rect.width, text_height) / 2,
+            rect.y0,
+            center.x + max(rect.width, text_height) / 2,
+            rect.y0 + max(rect.height, text_width),
+        )
+    return pymupdf.Rect(
+        center.x - max(rect.width, text_height) / 2,
+        rect.y1 - max(rect.height, text_width),
+        center.x + max(rect.width, text_height) / 2,
+        rect.y1,
     )
 
 
@@ -656,18 +807,21 @@ def _write_log(
         f"输出文件：{report.output_path}",
         f"页数：{report.page_count}",
         "选择区域：" + ",".join(f"{value:.6f}" for value in selection.as_tuple()),
-        f"替换模板：{options.template}",
-        f"起始序号：{options.start_sequence}",
+        f"固定前缀：{options.fixed_prefix or '（空）'}",
+        (
+            f"递增序号：从 {options.start_sequence} 开始，{options.sequence_digits} 位"
+            if options.start_sequence is not None
+            else "递增序号：未启用"
+        ),
+        f"固定后缀：{options.fixed_suffix or '（空）'}",
+        f"替换字体：{options.replacement_font_name or '自动匹配原字体'}",
         f"固定区域 OCR DPI：{options.fixed_dpi}",
         f"全页搜索：{'是' if options.global_search else '否'}",
         f"全页 OCR DPI：{options.global_dpi}",
         "",
         "[固定位置识别]",
     ]
-    lines.extend(
-        f"第 {item.page_number} 页 | {item.source} | 置信度 {item.confidence:.2%}"
-        for item in recognitions
-    )
+    lines.extend(f"第 {item.page_number} 页 | {item.source}" for item in recognitions)
     lines.extend(["", "[替换对应关系]"])
     lines.extend(
         f"{entry.source} -> {entry.target} | 页码 {','.join(map(str, entry.pages))}"

@@ -42,6 +42,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    contents_directory="runtime",
     version=str(version_file) if version_file.exists() else None,
 )
 

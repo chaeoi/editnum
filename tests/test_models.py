@@ -8,13 +8,13 @@ from drawing_number_tool.models import (
 
 
 def recognition(page: int, source: str) -> PageRecognition:
-    return PageRecognition(page, source, 0.99, NormalizedRect(0.8, 0.8, 0.9, 0.9))
+    return PageRecognition(page, source, NormalizedRect(0.8, 0.8, 0.9, 0.9))
 
 
 def test_duplicate_sources_share_sequence_without_incrementing() -> None:
     entries, lookup = build_mapping(
         [recognition(1, "A-01"), recognition(2, "A-01"), recognition(3, "B-02")],
-        ProcessOptions(template="NEW-{seq:03d}"),
+        ProcessOptions(fixed_prefix="NEW-", fixed_suffix="", sequence_digits=3),
     )
 
     assert [(entry.source, entry.target, entry.pages) for entry in entries] == [
@@ -28,11 +28,18 @@ def test_ocr_text_normalizes_width_whitespace_and_dashes() -> None:
     assert clean_ocr_text(" ０７‑0326 A ") == "07-0326A"
 
 
-def test_template_must_change_with_sequence() -> None:
-    options = ProcessOptions(template="constant")
-    try:
-        options.validate()
-    except ValueError as exc:
-        assert "{seq}" in str(exc)
-    else:
-        raise AssertionError("constant template should be rejected")
+def test_all_numbering_parts_are_individually_optional() -> None:
+    without_prefix = ProcessOptions(fixed_prefix="", fixed_suffix="-END", sequence_digits=2)
+    without_suffix = ProcessOptions(fixed_prefix="DOC-", fixed_suffix="", sequence_digits=1)
+    without_sequence = ProcessOptions(
+        fixed_prefix="FIXED", fixed_suffix="-END", start_sequence=None
+    )
+
+    assert without_prefix.number_for(1) == "01-END"
+    assert without_suffix.number_for(1) == "DOC-1"
+    assert without_sequence.number_for(100) == "FIXED-END"
+
+
+def test_all_numbering_parts_can_be_empty_to_clear_the_old_number() -> None:
+    options = ProcessOptions(fixed_prefix="", fixed_suffix="", start_sequence=None)
+    assert options.number_for(1) == ""
