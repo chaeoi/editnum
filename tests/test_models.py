@@ -47,3 +47,11 @@ def test_all_numbering_parts_can_be_empty_to_clear_the_old_number() -> None:
 
 def test_document_wide_replacement_is_opt_in() -> None:
     assert not ProcessOptions().global_search
+
+
+def test_default_numbering_uses_only_the_incrementing_part() -> None:
+    options = ProcessOptions()
+
+    assert options.fixed_prefix == ""
+    assert options.fixed_suffix == ""
+    assert options.number_for(1) == "001"

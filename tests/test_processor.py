@@ -93,3 +93,36 @@ def test_document_wide_replacement_is_not_run_unless_selected(tmp_path: Path) ->
     result.close()
     assert text.count("OLD-01") == 1
     assert text.count("NEW-001") == 1
+
+
+def test_fixed_replacement_keeps_the_detected_text_center(tmp_path: Path) -> None:
+    source = tmp_path / "source.pdf"
+    output = tmp_path / "output.pdf"
+    document = pymupdf.open()
+    page = document.new_page(width=300, height=200)
+    page.insert_text((170, 175), "OLD-01", fontsize=10)
+    document.save(source)
+    document.close()
+
+    recognition = PageRecognition(
+        page_number=1,
+        source="OLD-01",
+        text_rect=NormalizedRect(0.56, 0.80, 0.78, 0.90),
+    )
+    process_document(
+        source,
+        output,
+        NormalizedRect(0.50, 0.75, 0.98, 0.95),
+        [recognition],
+        ProcessOptions(fixed_prefix="NEW-", fixed_suffix="", sequence_digits=3),
+        ocr=EmptyOcr(),
+    )
+
+    result = pymupdf.open(output)
+    replacement = result[0].search_for("NEW-001")[0]
+    result.close()
+    detected_center = (0.56 + 0.78) * 300 / 2
+    detected_middle = (0.80 + 0.90) * 200 / 2
+
+    assert abs((replacement.x0 + replacement.x1) / 2 - detected_center) < 2
+    assert abs((replacement.y0 + replacement.y1) / 2 - detected_middle) < 0.01

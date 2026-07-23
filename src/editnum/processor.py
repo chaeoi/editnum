@@ -20,6 +20,7 @@ from .models import (
     matching_key,
 )
 from .ocr import OcrError, RapidOcrEngine, find_mapping_matches, primary_text
+from .type0_exact import ExactType0NotSupported, replace_exact_type0
 from .type3_exact import ExactType3NotSupported, replace_exact_type3
 from .version import __version__
 
@@ -146,8 +147,16 @@ def process_document(
                 mapping_by_key,
                 global_search=options.global_search,
             )
-        except ExactType3NotSupported as exc:
-            exact_failure = str(exc)
+        except ExactType3NotSupported as type3_exc:
+            try:
+                exact_result = replace_exact_type0(
+                    source_path,
+                    output_path,
+                    recognitions,
+                    mapping_by_key,
+                )
+            except ExactType0NotSupported as type0_exc:
+                exact_failure = f"Type 3：{type3_exc}；Type 0：{type0_exc}"
 
     if exact_result is not None:
         supplemental_count = 0
@@ -268,13 +277,12 @@ def _replace_visually(
             recognition = recognitions[index]
             source_key = matching_key(recognition.source)
             fixed_clear_display = _display_rect(page, recognition.text_rect)
-            fixed_place_display = _display_rect(page, selection)
             hits = [
                 _Hit(
                     source_key=source_key,
                     target=mapping_by_key[source_key],
                     clear_rect=_to_unrotated(page, fixed_clear_display),
-                    placement_rect=_to_unrotated(page, fixed_place_display),
+                    placement_rect=_to_unrotated(page, fixed_clear_display),
                     kind="选区位置",
                     display_height=fixed_clear_display.height,
                 )
@@ -670,31 +678,47 @@ def _insert_replacement(
             measure_font = pymupdf.Font(base14)
             strategy = f"原标准字体 {style.font_name}"
             exact_font = True
-    rect = pymupdf.Rect(hit.placement_rect)
     rotation = page.rotation if page.rotation in (0, 90, 180, 270) else 0
-    text_width = measure_font.text_length(hit.target, fontsize=style.font_size) * 1.03
-    if hit.reflow_line:
-        rect = _line_layout_rect(
-            rect,
-            text_width,
-            style.font_size * 1.8,
-            rotation,
-        )
-    elif rotation in (0, 180):
-        rect = _centered_rect(
-            rect, max(rect.width, text_width), max(rect.height, style.font_size * 1.8)
-        )
-    else:
-        rect = _centered_rect(
-            rect, max(rect.width, style.font_size * 1.8), max(rect.height, text_width)
-        )
-    rect = rect & page.mediabox
-    inset = 0.0 if hit.reflow_line else min(1.0, rect.width * 0.02, rect.height * 0.02)
-    rect.x0 += inset
-    rect.y0 += inset
-    rect.x1 -= inset
-    rect.y1 -= inset
     font_size = style.font_size
+    if not hit.reflow_line:
+        while font_size >= 4.0:
+            text_width = measure_font.text_length(hit.target, fontsize=font_size)
+            bounds = _centered_text_bounds(
+                pymupdf.Rect(hit.placement_rect),
+                measure_font,
+                font_size,
+                text_width,
+                rotation,
+            )
+            if page.mediabox.contains(bounds):
+                page.insert_text(
+                    _centered_text_origin(
+                        pymupdf.Rect(hit.placement_rect),
+                        measure_font,
+                        font_size,
+                        text_width,
+                        rotation,
+                    ),
+                    hit.target,
+                    fontname=fontname,
+                    fontsize=font_size,
+                    color=style.color,
+                    rotate=rotation,
+                    overlay=True,
+                )
+                return font_size, strategy, exact_font and abs(font_size - style.font_size) < 0.05
+            font_size -= 0.25
+        raise RuntimeError(f"Replacement text does not fit on page {page.number + 1}")
+
+    rect = pymupdf.Rect(hit.placement_rect)
+    text_width = measure_font.text_length(hit.target, fontsize=style.font_size) * 1.03
+    rect = _line_layout_rect(
+        rect,
+        text_width,
+        style.font_size * 1.8,
+        rotation,
+    )
+    rect = rect & page.mediabox
     while font_size >= 4.0:
         result = page.insert_textbox(
             rect,
@@ -710,6 +734,37 @@ def _insert_replacement(
             return font_size, strategy, exact_font and abs(font_size - style.font_size) < 0.05
         font_size -= 0.25
     raise RuntimeError(f"Replacement text does not fit on page {page.number + 1}")
+
+
+def _centered_text_origin(
+    placement: pymupdf.Rect,
+    font: pymupdf.Font,
+    font_size: float,
+    text_width: float,
+    rotation: int,
+) -> pymupdf.Point:
+    center = (placement.tl + placement.br) / 2
+    baseline_offset = (float(font.ascender) + float(font.descender)) * font_size / 2
+    if rotation == 0:
+        return pymupdf.Point(center.x - text_width / 2, center.y + baseline_offset)
+    if rotation == 180:
+        return pymupdf.Point(center.x + text_width / 2, center.y - baseline_offset)
+    if rotation == 90:
+        return pymupdf.Point(center.x + baseline_offset, center.y + text_width / 2)
+    return pymupdf.Point(center.x - baseline_offset, center.y - text_width / 2)
+
+
+def _centered_text_bounds(
+    placement: pymupdf.Rect,
+    font: pymupdf.Font,
+    font_size: float,
+    text_width: float,
+    rotation: int,
+) -> pymupdf.Rect:
+    glyph_height = max(0.1, float(font.ascender) - float(font.descender)) * font_size
+    if rotation in (0, 180):
+        return _centered_rect(placement, text_width, glyph_height)
+    return _centered_rect(placement, glyph_height, text_width)
 
 
 def _centered_rect(rect: pymupdf.Rect, width: float, height: float) -> pymupdf.Rect:

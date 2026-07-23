@@ -48,8 +48,8 @@ class MappingEntry:
 
 @dataclass
 class ProcessOptions:
-    fixed_prefix: str = "00QK0188RJB-LJ-"
-    fixed_suffix: str = "-0-260715"
+    fixed_prefix: str = ""
+    fixed_suffix: str = ""
     start_sequence: int | None = 1
     sequence_digits: int = 3
     fixed_dpi: int = 300

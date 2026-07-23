@@ -251,7 +251,7 @@ class EditNumApp:
         ttk.Label(settings, text="固定后段（可空）", style="Panel.TLabel").grid(
             row=0, column=3, sticky=tk.W, padx=(8, 0)
         )
-        self.prefix_var = tk.StringVar(value="00QK0188RJB-LJ-")
+        self.prefix_var = tk.StringVar(value="")
         ttk.Entry(settings, textvariable=self.prefix_var, width=20).grid(
             row=1, column=0, sticky=tk.EW, pady=(4, 8)
         )
@@ -267,7 +267,7 @@ class EditNumApp:
             width=4,
             state="readonly",
         ).grid(row=1, column=2, sticky=tk.EW, padx=(8, 0), pady=(4, 8))
-        self.suffix_var = tk.StringVar(value="-0-260715")
+        self.suffix_var = tk.StringVar(value="")
         ttk.Entry(settings, textvariable=self.suffix_var, width=14).grid(
             row=1, column=3, sticky=tk.EW, padx=(8, 0), pady=(4, 8)
         )
