@@ -138,6 +138,10 @@ def process_document(
     progress(0, 1, "正在检查嵌入字体精确替换")
     if options.replacement_font_path:
         exact_failure = "用户已选择 Windows 字体，改用统一视觉排版"
+    elif options.fixed_font_size is not None or (
+        options.global_search and options.global_font_size is not None
+    ):
+        exact_failure = "用户已指定替换字号，改用统一视觉排版"
     else:
         try:
             exact_result = replace_exact_type3(
@@ -325,10 +329,11 @@ def _replace_visually(
                 log_lines.append(
                     f"第 {index + 1} 页 {hit.kind}：{hit.target}，字体={strategy}，字号={used_size:.2f}"
                 )
-                if used_size + 0.05 < style.font_size:
+                expected_size = _replacement_font_size(hit, style, options)
+                if used_size + 0.05 < expected_size:
                     warning = (
                         f"第 {index + 1} 页 {hit.kind}因空间不足，字号由 "
-                        f"{style.font_size:.2f} 调整为 {used_size:.2f}"
+                        f"{expected_size:.2f} 调整为 {used_size:.2f}"
                     )
                     warnings.append(warning)
             page.clean_contents()
@@ -578,10 +583,11 @@ def _replace_remaining_ocr_hits(
                 log_lines.append(
                     f"第 {index + 1} 页 {hit.kind}：{hit.target}，字体={strategy}，字号={used_size:.2f}"
                 )
-                if used_size + 0.05 < style.font_size:
+                expected_size = _replacement_font_size(hit, style, options)
+                if used_size + 0.05 < expected_size:
                     warnings.append(
                         f"第 {index + 1} 页 OCR 残留因空间不足，字号由 "
-                        f"{style.font_size:.2f} 调整为 {used_size:.2f}"
+                        f"{expected_size:.2f} 调整为 {used_size:.2f}"
                     )
             page.clean_contents()
 
@@ -639,7 +645,7 @@ def _insert_replacement(
     options: ProcessOptions,
 ) -> tuple[float, str, bool]:
     if not hit.target:
-        return style.font_size, "清除文字", True
+        return _replacement_font_size(hit, style, options), "清除文字", True
     has_cjk = any(ord(char) > 255 for char in hit.target)
     fontname = "china-s" if has_cjk else "helv"
     strategy = "PyMuPDF 内置中文字体" if has_cjk else "PyMuPDF Helvetica 回退字体"
@@ -679,9 +685,10 @@ def _insert_replacement(
             strategy = f"原标准字体 {style.font_name}"
             exact_font = True
     rotation = page.rotation if page.rotation in (0, 90, 180, 270) else 0
-    font_size = style.font_size
+    font_size = _replacement_font_size(hit, style, options)
+    minimum_font_size = _minimum_font_size(hit, options)
     if not hit.reflow_line:
-        while font_size >= 4.0:
+        while font_size >= minimum_font_size:
             text_width = measure_font.text_length(hit.target, fontsize=font_size)
             bounds = _centered_text_bounds(
                 pymupdf.Rect(hit.placement_rect),
@@ -711,15 +718,15 @@ def _insert_replacement(
         raise RuntimeError(f"Replacement text does not fit on page {page.number + 1}")
 
     rect = pymupdf.Rect(hit.placement_rect)
-    text_width = measure_font.text_length(hit.target, fontsize=style.font_size) * 1.03
+    text_width = measure_font.text_length(hit.target, fontsize=font_size) * 1.03
     rect = _line_layout_rect(
         rect,
         text_width,
-        style.font_size * 1.8,
+        font_size * 1.8,
         rotation,
     )
     rect = rect & page.mediabox
-    while font_size >= 4.0:
+    while font_size >= minimum_font_size:
         result = page.insert_textbox(
             rect,
             hit.target,
@@ -734,6 +741,22 @@ def _insert_replacement(
             return font_size, strategy, exact_font and abs(font_size - style.font_size) < 0.05
         font_size -= 0.25
     raise RuntimeError(f"Replacement text does not fit on page {page.number + 1}")
+
+
+def _replacement_font_size(
+    hit: _Hit, style: _TextStyle, options: ProcessOptions
+) -> float:
+    if hit.kind == "选区位置" and options.fixed_font_size is not None:
+        return options.fixed_font_size
+    if hit.kind != "选区位置" and options.global_font_size is not None:
+        return options.global_font_size
+    return style.font_size
+
+
+def _minimum_font_size(hit: _Hit, options: ProcessOptions) -> float:
+    if hit.kind == "选区位置":
+        return 1.0 if options.fixed_font_size is not None else 4.0
+    return 1.0 if options.global_font_size is not None else 4.0
 
 
 def _centered_text_origin(
@@ -881,6 +904,12 @@ def _write_log(
         ),
         f"固定后缀：{options.fixed_suffix or '（空）'}",
         f"替换字体：{options.replacement_font_name or '自动匹配原字体'}",
+        _font_size_log_line("选区字号", options.fixed_font_size),
+        (
+            _font_size_log_line("其他区域字号", options.global_font_size)
+            if options.global_search
+            else "其他区域字号：未启用全文替换"
+        ),
         f"选区 OCR DPI：{options.fixed_dpi}",
         f"全文相同文字替换：{'是' if options.global_search else '否'}",
         f"全文 OCR DPI：{options.global_dpi}",
@@ -906,3 +935,9 @@ def _write_log(
     lines.extend(["", "[警告]"])
     lines.extend(report.warnings or ["无"])
     log_path.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
+
+
+def _font_size_log_line(label: str, font_size: float | None) -> str:
+    if font_size is not None:
+        return f"{label}：指定 {font_size:.2f} 磅"
+    return f"{label}：自适应（优先沿用原文字号，空间不足时自动缩小）"

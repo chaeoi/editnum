@@ -57,6 +57,8 @@ class ProcessOptions:
     global_search: bool = False
     replacement_font_path: str = ""
     replacement_font_name: str = ""
+    fixed_font_size: float | None = None
+    global_font_size: float | None = None
 
     def validate(self) -> None:
         if self.start_sequence is not None and self.start_sequence < 0:
@@ -67,6 +69,12 @@ class ProcessOptions:
             raise ValueError("区域 DPI 必须在 144 到 600 之间")
         if not 96 <= self.global_dpi <= 300:
             raise ValueError("全文 OCR DPI 必须在 96 到 300 之间")
+        for label, font_size in (
+            ("选区字号", self.fixed_font_size),
+            ("其他区域字号", self.global_font_size),
+        ):
+            if font_size is not None and not 1.0 <= font_size <= 200.0:
+                raise ValueError(f"{label}必须在 1 到 200 磅之间")
 
     def number_for(self, sequence: int) -> str:
         self.validate()

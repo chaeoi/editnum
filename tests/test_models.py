@@ -55,3 +55,21 @@ def test_default_numbering_uses_only_the_incrementing_part() -> None:
     assert options.fixed_prefix == ""
     assert options.fixed_suffix == ""
     assert options.number_for(1) == "001"
+
+
+def test_fixed_and_global_font_sizes_are_optional_and_independent() -> None:
+    options = ProcessOptions(fixed_font_size=16, global_font_size=9.5)
+    options.validate()
+    assert options.fixed_font_size == 16
+    assert options.global_font_size == 9.5
+
+
+def test_font_sizes_must_be_in_a_practical_range() -> None:
+    for field in ("fixed_font_size", "global_font_size"):
+        options = ProcessOptions(**{field: 0.5})
+        try:
+            options.validate()
+        except ValueError as exc:
+            assert "字号" in str(exc)
+        else:
+            raise AssertionError("invalid font size should fail validation")

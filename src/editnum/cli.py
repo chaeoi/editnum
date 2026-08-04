@@ -30,6 +30,16 @@ def main() -> None:
     parser.add_argument("--no-sequence", action="store_true", help="不使用递增序号")
     parser.add_argument("--suffix", default="", help="固定后缀，可为空")
     parser.add_argument("--font-file", type=Path, help="替换时使用的 TTF/TTC/OTF 字体文件")
+    parser.add_argument(
+        "--fixed-font-size", type=float, help="选区替换字号（磅），不填写则沿用原字号"
+    )
+    parser.add_argument(
+        "--other-font-size",
+        "--global-font-size",
+        dest="global_font_size",
+        type=float,
+        help="除选区外的其他全文命中字号（磅），不填写则自适应",
+    )
     parser.add_argument("--fixed-dpi", type=int, default=300)
     parser.add_argument("--document-dpi", "--global-dpi", dest="global_dpi", type=int, default=180)
     parser.add_argument(
@@ -48,6 +58,8 @@ def main() -> None:
         global_search=args.replace_all,
         replacement_font_path=str(args.font_file or ""),
         replacement_font_name=args.font_file.stem if args.font_file else "",
+        fixed_font_size=args.fixed_font_size,
+        global_font_size=args.global_font_size,
     )
 
     def progress(current: int, total: int, message: str) -> None:

@@ -281,15 +281,22 @@ class EditNumApp:
             row=2, column=0, columnspan=4, sticky=tk.EW, pady=(0, 12)
         )
 
-        ttk.Label(settings, text="选区识别 DPI", style="Panel.TLabel").grid(
+        ttk.Label(settings, text="选区字号（磅，留空自适应）", style="Panel.TLabel").grid(
             row=3, column=0, sticky=tk.W
+        )
+        self.fixed_font_size_var = tk.StringVar(value="")
+        ttk.Entry(settings, textvariable=self.fixed_font_size_var, width=8).grid(
+            row=4, column=0, sticky=tk.EW, pady=(4, 8)
+        )
+        ttk.Label(settings, text="选区识别 DPI", style="Panel.TLabel").grid(
+            row=5, column=0, sticky=tk.W
         )
         self.fixed_dpi_var = tk.IntVar(value=300)
         ttk.Spinbox(settings, from_=144, to=600, textvariable=self.fixed_dpi_var, width=8).grid(
-            row=4, column=0, sticky=tk.EW, pady=(4, 2)
+            row=6, column=0, sticky=tk.EW, pady=(4, 2)
         )
         ttk.Label(settings, text="替换字体", style="Panel.TLabel").grid(
-            row=3, column=1, columnspan=3, sticky=tk.W, padx=(8, 0)
+            row=5, column=1, columnspan=3, sticky=tk.W, padx=(8, 0)
         )
         self.font_paths = {AUTO_FONT: "", **_windows_font_choices()}
         self.font_var = tk.StringVar(value=AUTO_FONT)
@@ -300,7 +307,7 @@ class EditNumApp:
             state="readonly",
         )
         self.font_combo.grid(
-            row=4, column=1, columnspan=3, sticky=tk.EW, padx=(8, 0), pady=(4, 2)
+            row=6, column=1, columnspan=3, sticky=tk.EW, padx=(8, 0), pady=(4, 2)
         )
         settings.columnconfigure(0, weight=3)
         settings.columnconfigure(1, weight=1)
@@ -319,6 +326,16 @@ class EditNumApp:
             command=self._global_option_changed,
             style="Panel.TCheckbutton",
         ).grid(row=0, column=0, sticky=tk.W)
+        ttk.Label(
+            execution_options,
+            text="其他区域字号（磅，留空自适应）",
+            style="Muted.Panel.TLabel",
+        ).grid(row=1, column=1, sticky=tk.E, padx=(12, 6), pady=(8, 0))
+        self.global_font_size_var = tk.StringVar(value="")
+        self.global_font_size_entry = ttk.Entry(
+            execution_options, textvariable=self.global_font_size_var, width=8, state=tk.DISABLED
+        )
+        self.global_font_size_entry.grid(row=1, column=2, sticky=tk.E, pady=(8, 0))
         ttk.Label(execution_options, text="全文识别 DPI", style="Muted.Panel.TLabel").grid(
             row=0, column=1, sticky=tk.E, padx=(12, 6)
         )
@@ -396,6 +413,15 @@ class EditNumApp:
     def _options(self) -> ProcessOptions:
         start_text = self.start_var.get().strip()
         start_sequence = int(start_text) if start_text else None
+        fixed_font_size_text = self.fixed_font_size_var.get().strip()
+        global_font_size_text = self.global_font_size_var.get().strip()
+        fixed_font_size = float(fixed_font_size_text) if fixed_font_size_text else None
+        global_search = bool(self.global_var.get())
+        global_font_size = (
+            float(global_font_size_text)
+            if global_search and global_font_size_text
+            else None
+        )
         font_name = self.font_var.get()
         options = ProcessOptions(
             fixed_prefix=self.prefix_var.get(),
@@ -404,9 +430,11 @@ class EditNumApp:
             sequence_digits=int(self.sequence_digits_var.get()),
             fixed_dpi=int(self.fixed_dpi_var.get()),
             global_dpi=int(self.global_dpi_var.get()),
-            global_search=bool(self.global_var.get()),
+            global_search=global_search,
             replacement_font_path=self.font_paths.get(font_name, ""),
             replacement_font_name="" if font_name == AUTO_FONT else font_name,
+            fixed_font_size=fixed_font_size,
+            global_font_size=global_font_size,
         )
         options.validate()
         return options
@@ -431,6 +459,7 @@ class EditNumApp:
     def _global_option_changed(self) -> None:
         state = tk.NORMAL if self.global_var.get() else tk.DISABLED
         self.global_dpi_spinbox.configure(state=state)
+        self.global_font_size_entry.configure(state=state)
 
     def _open_pdf(self) -> None:
         filename = filedialog.askopenfilename(filetypes=[("PDF 文件", "*.pdf"), ("所有文件", "*.*")])

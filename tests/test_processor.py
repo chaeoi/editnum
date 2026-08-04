@@ -126,3 +126,63 @@ def test_fixed_replacement_keeps_the_detected_text_center(tmp_path: Path) -> Non
 
     assert abs((replacement.x0 + replacement.x1) / 2 - detected_center) < 2
     assert abs((replacement.y0 + replacement.y1) / 2 - detected_middle) < 0.01
+
+
+def test_selected_and_other_region_font_sizes_support_all_combinations(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.pdf"
+    document = pymupdf.open()
+    page = document.new_page(width=300, height=200)
+    page.insert_text((170, 175), "OLD-01", fontsize=10)
+    page.insert_text((30, 60), "OLD-01", fontsize=10)
+    document.save(source)
+    document.close()
+
+    recognition = PageRecognition(
+        page_number=1,
+        source="OLD-01",
+        text_rect=NormalizedRect(0.56, 0.80, 0.78, 0.90),
+    )
+    cases = (
+        (None, None, 10.0, 10.0),
+        (16.0, None, 16.0, 10.0),
+        (None, 8.0, 10.0, 8.0),
+        (16.0, 8.0, 16.0, 8.0),
+    )
+    for index, (
+        fixed_size,
+        other_size,
+        expected_fixed,
+        expected_other,
+    ) in enumerate(cases):
+        output = tmp_path / f"output-{index}.pdf"
+        process_document(
+            source,
+            output,
+            NormalizedRect(0.50, 0.75, 0.98, 0.95),
+            [recognition],
+            ProcessOptions(
+                fixed_prefix="NEW-",
+                sequence_digits=3,
+                global_search=True,
+                fixed_font_size=fixed_size,
+                global_font_size=other_size,
+            ),
+            ocr=EmptyOcr(),
+        )
+
+        result = pymupdf.open(output)
+        replacements = []
+        for block in result[0].get_text("dict")["blocks"]:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    if "NEW-001" in span.get("text", ""):
+                        replacements.append(
+                            (float(span["bbox"][1]), round(float(span["size"]), 1))
+                        )
+        result.close()
+        replacements.sort()
+        assert len(replacements) == 2
+        assert replacements[0][1] == expected_other
+        assert replacements[1][1] == expected_fixed
