@@ -60,15 +60,7 @@ EditNUM 是一款离线 Windows PDF 批量文字识别与替换工具。它可�
 
 ## 下载与版本
 
-GitHub Actions 在每次推送到 `main` 或手动触发时构建 Windows 版本：
-
-- Release 标题固定为项目名 `EditNUM`。
-- tag 与软件版本号一致，当前格式为提交日期 `YYYYMMDD`。
-- 下载文件固定为 `EditNUM.zip`，校验文件为 `EditNUM.zip.sha256`。
-- 解压后运行 `EditNUM.exe`，无需安装 Python 或使用管理员权限。
-- 发布包顶层只包含 `EditNUM.exe`、`runtime` 和 `licenses`。
-
-同一版本重复构建时，工作流会重新创建对应 Release，不在旧 Release 上追加编辑记录。
+Windows 免安装包与 SHA-256 校验文件由 GitHub Actions 自动构建并发布。版本号和重跑规则见文末“版本与发布”。
 
 ## 本地开发
 
@@ -112,3 +104,17 @@ Windows PowerShell 将 `.venv/bin/python` 替换为 `.venv/Scripts/python.exe`�
 EditNUM 使用 pikepdf、qpdf、PyMuPDF、RapidOCR、ONNX Runtime、Pillow 和 PyInstaller。第三方许可见 `docs/THIRD-PARTY-NOTICES.txt`。
 
 由于项目使用 PyMuPDF，分发构建产物时需要遵守 AGPL-3.0，或另行取得 Artifex 商业许可。
+
+## 版本与发布
+
+推送到 `main` 后，GitHub Actions 自动编号、创建标签并发布，版本格式为 `年.月.发布序号`。
+年月取 commit 提交时间的 UTC 年月；没有同月标签时从 `.1` 开始，后续取同月最大序号加一。
+一次推送多个提交只为最后一个提交分配一次编号，首次发布前的历史提交不计数。
+同一 commit 重跑沿用原编号，构建失败预留的编号不回收，因此未完成的发布可能留下空号。
+
+发布任务排队执行。后续 commit 已有版本标签时，尚未编号的旧任务会跳过；已编号的旧版本可以重跑，
+但不会覆盖更新的 `latest`。中断的草稿发布可继续完成，已公开的附件和已有版本镜像不覆盖。
+Release 名称采用“项目名 版本号”，正文包含提交说明、使用入口和相邻版本变更；附件提供 `SHA256SUMS`。
+构建时写入程序或包版本，不自动回写源码提交。开发副本使用开发版本标识。
+
+Windows 原生文件版本使用四段数字：年、月、序号高 16 位、序号低 16 位；显示版本仍为三段发布号。
